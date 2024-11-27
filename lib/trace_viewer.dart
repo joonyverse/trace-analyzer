@@ -1,142 +1,223 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
+import 'dart:math';
 import 'timeline_chart.dart';
 import 'package:flutter_dropzone/flutter_dropzone.dart';
+import 'dart:isolate';
+import 'config.dart';
 
 class TraceAnalyzer {
   List<dynamic> events = [];
 
+  // 청크 단위로 처리할 이벤트 수
+  static const int _chunkSize = TraceViewerConfig.chunkSize;
+
   Future<Map<String, dynamic>> parseTraceFile(String fileContent) async {
+    final stopwatch = Stopwatch()..start();
+    print('시작: 파일 파싱');
+    
     try {
-      final data = json.decode(fileContent);
-      if (data['traceEvents'] != null) {
-        events = data['traceEvents'];
-        return processTraceEvents();
+      final splitTime = stopwatch.elapsedMilliseconds;
+      final lines = fileContent.split('\n');
+      print('라인 분할 시간: ${stopwatch.elapsedMilliseconds - splitTime}ms');
+      
+      events = [];
+      List<dynamic> parsedEvents = [];
+      
+      // 청크 처리 시작 시간
+      final chunkStartTime = stopwatch.elapsedMilliseconds;
+      int totalLines = 0;
+      
+      for (var i = 0; i < lines.length; i += _chunkSize) {
+        final chunkTime = stopwatch.elapsedMilliseconds;
+        
+        final end = (i + _chunkSize < lines.length) ? i + _chunkSize : lines.length;
+        final chunk = lines.sublist(i, end);
+        
+        // 각 라인 파싱
+        for (var line in chunk) {
+          if (line.trim().isEmpty || line.trim() == '[' || line.trim() == ']') continue;
+          
+          var cleanLine = line.trim();
+          if (cleanLine.endsWith(',')) {
+            cleanLine = cleanLine.substring(0, cleanLine.length - 1);
+          }
+          
+          try {
+            final jsonData = json.decode(cleanLine);
+            if (jsonData['tid'] is String) {
+              jsonData['tid'] = int.parse(jsonData['tid']);
+            }
+            parsedEvents.add(jsonData);
+            totalLines++;
+          } catch (e) {
+            print('Failed to parse line: $cleanLine');
+            continue;
+          }
+        }
+        
+        print('청크 ${i ~/ _chunkSize + 1} 처리 시간: ${stopwatch.elapsedMilliseconds - chunkTime}ms (${chunk.length} 라인)');
+        await Future.delayed(Duration.zero);
       }
-      throw Exception('올바른 Trace Event Format이 아닙니다.');
+      
+      print('전체 청크 처리 시간: ${stopwatch.elapsedMilliseconds - chunkStartTime}ms (총 $totalLines 라인)');
+      
+      events = parsedEvents;
+      
+      final processStartTime = stopwatch.elapsedMilliseconds;
+      final result = await processTraceEvents();
+      print('이벤트 처리 시간: ${stopwatch.elapsedMilliseconds - processStartTime}ms');
+      
+      print('총 소요 시간: ${stopwatch.elapsedMilliseconds}ms');
+      return result;
     } catch (error) {
+      print('에러 발생 시간: ${stopwatch.elapsedMilliseconds}ms');
       throw Exception('파일 파싱 중 오류 발생: $error');
     }
   }
+  
+  // 별도 isolate에서 실행될 파싱 함수
+  static List<dynamic> _parseChunk(List<String> lines) {
+    return lines.where((line) {
+      final trimmed = line.trim();
+      return trimmed.isNotEmpty && trimmed != '[' && trimmed != ']';
+    }).map((line) {
+      var cleanLine = line.trim();
+      if (cleanLine.endsWith(',')) {
+        cleanLine = cleanLine.substring(0, cleanLine.length - 1);
+      }
+      try {
+        final jsonData = json.decode(cleanLine);
+        // tid를 문자열에서 정수로 변환
+        if (jsonData['tid'] is String) {
+          jsonData['tid'] = int.parse(jsonData['tid']);
+        }
+        return jsonData;
+      } catch (e) {
+        print('Failed to parse line: $cleanLine');
+        rethrow;
+      }
+    }).toList();
+  }
 
-  Map<String, dynamic> processTraceEvents() {
-    Map<String, dynamic> processedData = {
-      'totalDuration': 0.0,
+  Future<Map<String, dynamic>> processTraceEvents() async {
+    final stopwatch = Stopwatch()..start();
+    print('시작: 이벤트 처리');
+    
+    final initStartTime = stopwatch.elapsedMilliseconds;
+    final processedData = _initializeProcessedData();
+    print('초기화 시간: ${stopwatch.elapsedMilliseconds - initStartTime}ms');
+    
+    final chunksStartTime = stopwatch.elapsedMilliseconds;
+    final chunks = _splitIntoChunks(events, _chunkSize);
+    print('청크 분할 시간: ${stopwatch.elapsedMilliseconds - chunksStartTime}ms');
+    
+    final parallelStartTime = stopwatch.elapsedMilliseconds;
+    final futures = chunks.map((chunk) => 
+      compute(_processChunkParallel, {
+        'chunk': chunk,
+        'startTime': processedData['startTime'],
+      })
+    );
+    
+    final results = await Future.wait(futures);
+    print('병렬 처리 시간: ${stopwatch.elapsedMilliseconds - parallelStartTime}ms');
+    
+    final mergeStartTime = stopwatch.elapsedMilliseconds;
+    final timelineEvents = <Map<String, dynamic>>[];
+    final eventsByPhase = <String, int>{};
+    
+    for (var result in results) {
+      timelineEvents.addAll(result['timelineEvents'] as List<Map<String, dynamic>>);
+      _mergePhases(eventsByPhase, result['eventsByPhase'] as Map<String, int>);
+    }
+    
+    processedData['timelineEvents'] = timelineEvents;
+    processedData['eventsByPhase'] = eventsByPhase;
+    
+    print('결과 병합 시간: ${stopwatch.elapsedMilliseconds - mergeStartTime}ms');
+    print('총 처리 시간: ${stopwatch.elapsedMilliseconds}ms');
+    
+    return processedData;
+  }
+  
+  Map<String, dynamic> _initializeProcessedData() {
+    double startTime = double.maxFinite;
+    double endTime = 0.0;
+    
+    // 빠른 첫 패스로 시작/종료 시간만 계산
+    for (var event in events) {
+      final ts = double.tryParse(event['ts']?.toString() ?? '0') ?? 0;
+      final dur = double.tryParse(event['dur']?.toString() ?? '0') ?? 0;
+      
+      startTime = min(startTime, ts.toDouble());
+      endTime = max(endTime, ts + dur);
+    }
+    
+    return {
+      'totalDuration': (endTime - startTime) / 1000.0,
       'eventCount': events.length,
       'eventsByPhase': <String, int>{},
       'timelineEvents': <Map<String, dynamic>>[],
-      'startTime': double.maxFinite,
-      'endTime': 0.0
+      'startTime': startTime,
+      'endTime': endTime,
     };
-
-    // Begin-End 페어를 찾기 위한 맵
-    Map<String, Map<String, dynamic>> openEvents = {};
-
-    // print('Processing ${events.length} events');
-
-    // 시작 시과 종료 시간 찾기
-    for (var event in events) {
-      final num ts = (event['ts'] as num?) ?? 0;
-      final num dur = (event['dur'] as num?) ?? 0;
-      
-      if (ts < processedData['startTime']) {
-        processedData['startTime'] = ts.toDouble();
-      }
-      // X 이벤트는 dur를 포함하므로 종료 시간 계산에 포함
-      if (ts + dur > processedData['endTime']) {
-        processedData['endTime'] = (ts + dur).toDouble();
-      }
-    }
-
-    // 이벤트 처리
-    for (var event in events) {
-      final String phase = (event['ph'] as String?) ?? '';
-      final eventsByPhase = processedData['eventsByPhase'] as Map<String, int>;
-      eventsByPhase[phase] = (eventsByPhase[phase] ?? 0) + 1;
-
-      final num ts = (event['ts'] as num?) ?? 0;
-      final String name = (event['name'] as String?) ?? 'Unknown';
-      final String category = (event['cat'] as String?) ?? 'default';
-      final int pid = (event['pid'] as int?) ?? 0;
-      final int tid = (event['tid'] as int?) ?? 0;
-
-      if (phase == 'X') {
-        // Duration 이벤트 처리
-        final num dur = (event['dur'] as num?) ?? 0;
-        final timelineEvent = {
-          'name': name,
-          'startTime': ts,
-          'duration': dur,
-          'category': category,
-          'pid': pid,
-          'tid': tid,
-          'normalizedStartTime': 
-              (ts - processedData['startTime']) / 1000.0,
-          'normalizedDuration': dur / 1000.0
-        };
-
-        // print('Timeline Event (X):');
-        // print('  Name: $name');
-        // print('  Start Time: ${timelineEvent['normalizedStartTime']}ms');
-        // print('  Duration: ${timelineEvent['normalizedDuration']}ms');
-
-        (processedData['timelineEvents'] as List<Map<String, dynamic>>)
-            .add(timelineEvent);
-      } else if (phase == 'B') {
-        // Begin 이벤트 저장
-        final key = '$name-$pid-$tid';
-        openEvents[key] = {
-          'name': name,
-          'startTime': ts,
-          'category': category,
-          'pid': pid,
-          'tid': tid,
-        };
-      } else if (phase == 'E') {
-        // End 이벤트 매칭
-        final key = '$name-$pid-$tid';
-        final beginEvent = openEvents[key];
-        if (beginEvent != null) {
-          final startTime = beginEvent['startTime'] as num;
-          final duration = ts - startTime;
-
-          final timelineEvent = {
-            'name': name,
-            'startTime': startTime,
-            'duration': duration,
-            'category': category,
-            'pid': pid,
-            'tid': tid,
-            'normalizedStartTime': 
-                (startTime - processedData['startTime']) / 1000.0,
-            'normalizedDuration': duration / 1000.0
-          };
-
-          // print('Timeline Event (B-E):');
-          // print('  Name: $name');
-          // print('  Start Time: ${timelineEvent['normalizedStartTime']}ms');
-          // print('  Duration: ${timelineEvent['normalizedDuration']}ms');
-
-          (processedData['timelineEvents'] as List<Map<String, dynamic>>)
-              .add(timelineEvent);
-          openEvents.remove(key);
-        }
-      }
-    }
-
-    final double startTime = processedData['startTime'] as double;
-    final double endTime = processedData['endTime'] as double;
-    processedData['totalDuration'] = (endTime - startTime) / 1000.0;
-    
-    // print('\nFinal Results:');
-    // print('Total Duration: ${processedData['totalDuration']}ms');
-    // print('Events Count: ${(processedData['timelineEvents'] as List).length}');
-    // print('Start Time: ${processedData['startTime']}');
-    // print('End Time: ${processedData['endTime']}');
-
-    return processedData;
   }
+  
+  // 병렬 처리를 위한 청크 분할
+  List<List<dynamic>> _splitIntoChunks(List<dynamic> list, int size) {
+    return List.generate(
+      (list.length / size).ceil(),
+      (i) => list.skip(i * size).take(size).toList(),
+    );
+  }
+  
+  void _mergePhases(Map<String, int> target, Map<String, int> source) {
+    source.forEach((key, value) {
+      target[key] = (target[key] ?? 0) + value;
+    });
+  }
+}
+
+// 별도 isolate에서 실행될 이벤트 처리 함수
+Map<String, dynamic> _processChunkParallel(Map<String, dynamic> params) {
+  final chunk = params['chunk'] as List;
+  final startTime = params['startTime'] as double;
+  
+  final result = {
+    'eventsByPhase': <String, int>{},
+    'timelineEvents': <Map<String, dynamic>>[],
+  };
+  
+  for (var event in chunk) {
+    final phase = event['ph']?.toString() ?? '';
+    (result['eventsByPhase'] as Map<String, int>)[phase] = 
+        ((result['eventsByPhase'] as Map<String, int>)[phase] ?? 0) + 1;
+    
+    if (phase == 'X') {
+      final ts = double.tryParse(event['ts']?.toString() ?? '0') ?? 0;
+      final dur = double.tryParse(event['dur']?.toString() ?? '0') ?? 0;
+      
+      // tid를 정수로 확실하게 변환
+      final tid = event['tid'] is String ? 
+          int.parse(event['tid']) : (event['tid'] as int);
+      
+      (result['timelineEvents'] as List<Map<String, dynamic>>).add({
+        'name': event['name']?.toString() ?? 'Unknown',
+        'startTime': ts,
+        'duration': dur,
+        'category': event['cat']?.toString() ?? 'default',
+        'pid': int.tryParse(event['pid']?.toString() ?? '0') ?? 0,
+        'tid': tid,
+        'normalizedStartTime': (ts - startTime) / 1000.0,
+        'normalizedDuration': dur / 1000.0,
+      });
+    }
+  }
+  
+  return result;
 }
 
 class TraceViewer extends StatefulWidget {

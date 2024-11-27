@@ -1,86 +1,87 @@
 import json
+import os
 import random
 from datetime import datetime
 
-def generate_random_trace_data(event_count=10000):
-    events = []
-    process_ids = list(range(1, 2))  # 1개의 프로세스
-    thread_ids = list(range(1, 11))  # 10개의 스레드
-    categories = ['rendering', 'painting', 'computing', 'network', 'io', 'gc']
-    event_names = [
-        'LoadURL', 'ParseHTML', 'Layout', 'Paint', 'Composite',
-        'JavaScript', 'GarbageCollection', 'NetworkRequest', 'DiskIO',
-        'ImageDecode', 'VideoFrame', 'AudioProcess', 'DatabaseQuery',
-        'APICall', 'WebGLRender'
+def generate_random_trace_data(event_count=500000):
+    # 두 단어로 된 이벤트 이름 정의
+    first_words = [
+        "Network", "Database", "Memory", "CPU", "Disk",
+        "Audio", "Video", "Graphics", "Input", "System"
     ]
-
-    # 각 스레드별 이벤트 리스트를 따로 관리
+    second_words = [
+        "Process", "Request", "Operation", "Task", "Handler",
+        "Stream", "Buffer", "Queue", "Event", "Worker"
+    ]
+    
+    # 첫 단어별 색상 매핑
+    color_map = {
+        "Network": "#ff7f7f",  # 빨간색 계열
+        "Database": "#7f7fff", # 파란색 계열
+        "Memory": "#7fff7f",   # 초록색 계열
+        "CPU": "#ff7fff",      # 분홍색 계열
+        "Disk": "#ffff7f",     # 노란색 계열
+        "Audio": "#7fffff",    # 청록색 계열
+        "Video": "#ff7f00",    # 주황색 계열
+        "Graphics": "#007fff", # 하늘색 계열
+        "Input": "#7f00ff",    # 보라색 계열
+        "System": "#7f7f7f"    # 회색 계열
+    }
+    
+    events = []
+    thread_ids = list(range(1, 31))
+    categories = ["rendering", "computing", "io", "network", "painting", "gc"]
+    
     thread_events = {tid: [] for tid in thread_ids}
     
-    # Duration (X) 이벤트 생성
     for _ in range(event_count):
+        first_word = random.choice(first_words)
+        second_word = random.choice(second_words)
+        name = f"{first_word} {second_word}"
+        
         tid = random.choice(thread_ids)
         duration = random.randint(10, 100)
         
-        if not thread_events[tid]:  # 해당 스레드의 첫 이벤트인 경우
-            start_time = random.randint(0, 1000)
-        else:
-            # 마지막 이벤트의 시간만 확인하도록 단순화
-            last_event = thread_events[tid][-1]
-            last_end_time = last_event['ts'] + last_event['dur']
-            
-            # 중첩 확률을 낮춤
-            if random.random() < 0.3 and len(thread_events[tid]) > 0:
-                parent_event = last_event  # 마지막 이벤트만 부모로 사용
-                parent_start = parent_event['ts']
-                parent_end = parent_start + parent_event['dur']
-                
-                if duration > parent_event['dur']:
-                    duration = random.randint(10, parent_event['dur'])
-                
-                start_time = random.randint(parent_start, parent_end - duration)
-            else:
-                start_time = last_end_time + random.randint(1, 5)  # 간격을 줄임
-        
         event = {
-            "name": random.choice(event_names),
-            "cat": random.choice(categories),
+            "name": str(name),
+            "cat": str(random.choice(categories)),
             "ph": "X",
-            "pid": random.choice(process_ids),
-            "tid": tid,
-            "ts": start_time,
-            "dur": duration
+            "pid": str(1),
+            "tid": str(tid),
+            "dur": str(duration),
+            "ts": "0",
+            "cname": str(color_map[first_word])
         }
         
         thread_events[tid].append(event)
     
-    # 모든 스레드의 이벤트를 하나의 리스트로 합치기
-    events = [event for thread_list in thread_events.values() for event in thread_list]
+    # 시간 설정 부분도 문자열로 변환
+    for tid, events in thread_events.items():
+        current_time = 0
+        for event in events:
+            event["ts"] = str(current_time)
+            current_time += int(event["dur"]) + random.randint(1, 5)
     
-    # 이벤트를 시간순으로 정렬
-    events.sort(key=lambda x: x['ts'])
+    # 모든 이벤트를 하나의 리스트로 합침
+    all_events = [event for events in thread_events.values() for event in events]
+    
+    return all_events
 
-    return {
-        "traceEvents": events,
-        "metadata": {
-            "generated_at": datetime.now().isoformat(),
-            "event_count": len(events)
-        }
-    }
-
-# 트레이스 데이터 생성 및 저장
+# JSON 형식으로 출력
 trace_data = generate_random_trace_data()
-with open('test-data.json', 'w') as f:
-    json.dump(trace_data, f, indent=2)
 
-# 파일 크기 확인
-import os
-file_size = os.path.getsize('test-data.json') / (1024 * 1024)  # MB로 변환
-print(f"Generated trace data file size: {file_size:.2f}MB")
+with open('test-data.json', 'w') as f:
+    f.write('[')  # 배열 시작
+    for event in trace_data:
+        json_str = json.dumps(event, separators=(',', ':'))
+        f.write(json_str + ',\n')  # 모든 이벤트 뒤에 쉼표 추가
+    # 닫는 대괄호 없이 저장
+
+print(f"Generated trace data file size: {os.path.getsize('test-data.json') / (1024 * 1024):.2f}MB")
 
 # 생성된 데이터 검증
 threads = {}
-for event in trace_data["traceEvents"]:
+for event in trace_data:
     tid = event["tid"]
     if tid not in threads:
         threads[tid] = []
@@ -94,7 +95,3 @@ for tid, thread_events in threads.items():
         next_event = thread_events[i + 1]
         current_end = current_event['ts'] + current_event['dur']
         next_start = next_event['ts']
-        if current_end > next_start:
-            print(f"Warning: Overlap detected in thread {tid}")
-            print(f"Event 1: {current_event['name']} ({current_event['ts']} -> {current_end})")
-            print(f"Event 2: {next_event['name']} ({next_start} -> {next_event['ts'] + next_event['dur']})") 

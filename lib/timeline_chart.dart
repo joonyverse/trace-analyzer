@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:math';  // min, max 함수를 위해 추가
+import 'config.dart';
 
 class TimelineChart extends StatefulWidget {
   final List<Map<String, dynamic>> timelineEvents;
@@ -20,10 +21,10 @@ class TimelineChart extends StatefulWidget {
 
 class _TimelineChartState extends State<TimelineChart> {
   final _focusNode = FocusNode();
-  double _zoomLevel = 100.0;
+  double _zoomLevel = TraceViewerConfig.initialZoomLevel;
   double _scrollOffset = 0.0;
-  static const double _zoomFactor = 1.1;
-  static const double _scrollAmount = 10.0;
+  static const double _zoomFactor = TraceViewerConfig.zoomFactor;
+  static const double _scrollAmount = TraceViewerConfig.scrollAmount;
   
   // 뷰포트 상태
   double _viewportStart = 0.0;
@@ -34,7 +35,7 @@ class _TimelineChartState extends State<TimelineChart> {
   List<int> _sortedThreadIds = [];
   
   // 렌더링 최적화를 위한 변수들
-  final int _maxVisibleEvents = 50000;
+  final int _maxVisibleEvents = TraceViewerConfig.maxVisibleEvents;
   bool _isRendering = false;
   
   Offset? _lastMousePosition;  // 마우스 위치 용 변수 추가
@@ -47,7 +48,7 @@ class _TimelineChartState extends State<TimelineChart> {
   Offset? _dragEnd;
   
   // 드래그 거리 임계값 추가
-  static const double _dragThreshold = 5.0;
+  static const double _dragThreshold = TraceViewerConfig.dragThreshold;
   Offset? _dragStartPosition;  // 드래그 시작 위치 저장용
 
   // 마우스 가이드라인 관련 변수들
@@ -82,38 +83,34 @@ class _TimelineChartState extends State<TimelineChart> {
   }
 
   Future<void> _processEventsInBackground() async {
+    final stopwatch = Stopwatch()..start();
+    print('시작: 이벤트 백그라운드 처리');
+    
     _threadEvents = {};
-    _threadTrackCount = {};  // 초기화
+    _threadTrackCount = {};
     
     // 스레드별로 이벤트 그룹화
+    final groupStartTime = stopwatch.elapsedMilliseconds;
     for (final event in widget.timelineEvents) {
       final tid = event['tid'] as int;
       _threadEvents.putIfAbsent(tid, () => []).add(event);
     }
+    print('스레드별 그룹화 시간: ${stopwatch.elapsedMilliseconds - groupStartTime}ms');
     
     _sortedThreadIds = _threadEvents.keys.toList()..sort();
     
     // 각 스레드의 이벤트를 시간순으로 정렬하고 트랙 할당
     for (var tid in _sortedThreadIds) {
+      final sortTime = stopwatch.elapsedMilliseconds;
       var events = _threadEvents[tid]!;
       events.sort((a, b) => (a['normalizedStartTime'] as double)
           .compareTo(b['normalizedStartTime'] as double));
+      print('스레드 $tid 이벤트 정렬 시간: ${stopwatch.elapsedMilliseconds - sortTime}ms (${events.length} 이벤트)');
       
-      // 이벤트들을 트랙에 할당
-      List<List<Map<String, dynamic>>> tracks = [[]];
-      for (var event in events) {
-        bool placed = false;
-        for (var track in tracks) {
-          if (canAddToTrack(track, event)) {
-            track.add(event);
-            placed = true;
-            break;
-          }
-        }
-        if (!placed) {
-          tracks.add([event]);
-        }
-      }
+      final allocTime = stopwatch.elapsedMilliseconds;
+      // 최적화된 트랙 할당 알고리즘
+      final tracks = _assignTracksOptimized(events);
+      print('스레드 $tid 트랙 할당 시간: ${stopwatch.elapsedMilliseconds - allocTime}ms (${tracks.length} 트랙)');
       
       // 트랙 수 저장
       _threadTrackCount[tid] = tracks.length;
@@ -127,6 +124,40 @@ class _TimelineChartState extends State<TimelineChart> {
     }
 
     if (mounted) setState(() {});
+  }
+
+  List<List<Map<String, dynamic>>> _assignTracksOptimized(List<Map<String, dynamic>> events) {
+    if (events.isEmpty) return [];
+    
+    // 각 트랙의 마지막 이벤트의 종료 시간을 저장
+    final trackEndTimes = <double>[];
+    final tracks = <List<Map<String, dynamic>>>[];
+    
+    for (var event in events) {
+      final startTime = event['normalizedStartTime'] as double;
+      final duration = event['normalizedDuration'] as double;
+      final endTime = startTime + duration;
+      
+      // 기존 트랙 중에서 이벤트를 배치할 수 있는 트랙 찾기
+      bool placed = false;
+      for (var i = 0; i < trackEndTimes.length; i++) {
+        if (startTime >= trackEndTimes[i]) {
+          // 트랙에 이벤트 추가
+          tracks[i].add(event);
+          trackEndTimes[i] = endTime;
+          placed = true;
+          break;
+        }
+      }
+      
+      // 기존 트랙에 배치할 수 없으면 새 트랙 생성
+      if (!placed) {
+        tracks.add([event]);
+        trackEndTimes.add(endTime);
+      }
+    }
+    
+    return tracks;
   }
 
   bool canAddToTrack(List<Map<String, dynamic>> track, Map<String, dynamic> newEvent) {
@@ -159,7 +190,9 @@ class _TimelineChartState extends State<TimelineChart> {
         int start = _binarySearch(events, _viewportStart);
         
         int count = 0;
-        for (var i = start; i < events.length && count < _maxVisibleEvents ~/ _sortedThreadIds.length; i++) {
+        int maxEventsPerThread = _maxVisibleEvents ~/ _sortedThreadIds.length;
+        
+        for (var i = start; i < events.length && count < maxEventsPerThread; i++) {
           final event = events[i];
           final startTime = event['normalizedStartTime'] as double;
           if (startTime > viewportEnd) break;
@@ -167,7 +200,7 @@ class _TimelineChartState extends State<TimelineChart> {
           final duration = event['normalizedDuration'] as double;
           final eventWidth = (duration / _viewportDuration) * _zoomLevel;
           
-          if (eventWidth > 0.0) {
+          if (eventWidth > TraceViewerConfig.eventMinWidth) {
             visibleEvents.add(event);
             count++;
           }
@@ -318,40 +351,39 @@ class _TimelineChartState extends State<TimelineChart> {
     if (event is RawKeyDownEvent) {
       setState(() {
         final oldZoom = _zoomLevel;
-        final threadLabelWidth = 50.0;
+        final threadLabelWidth = TraceViewerConfig.threadLabelWidth;
 
         switch (event.logicalKey) {
           case LogicalKeyboardKey.keyW:
           case LogicalKeyboardKey.keyS:
             if (_lastMousePosition != null) {
-              // 마우스 위치의 시간값 계산
               final mouseX = _lastMousePosition!.dx - threadLabelWidth;
               final availableWidth = context.size!.width - threadLabelWidth;
               final mouseTimeOffset = (mouseX / availableWidth) * _viewportDuration;
               final mouseAbsoluteTime = _viewportStart + mouseTimeOffset;
 
-              // 줌 레벨 변경 - 최대값을 10000.0으로 증가
               if (event.logicalKey == LogicalKeyboardKey.keyW) {
-                _zoomLevel = (_zoomLevel * _zoomFactor).clamp(1.0, 10000.0);
+                _zoomLevel = (_zoomLevel * _zoomFactor)
+                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               } else {
-                _zoomLevel = (_zoomLevel / _zoomFactor).clamp(1.0, 10000.0);
+                _zoomLevel = (_zoomLevel / _zoomFactor)
+                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               }
 
-              // 새로운 뷰포트 계산
               _viewportDuration = widget.totalDuration / _zoomLevel;
               
-              // 마우스 위치가 동일한 시간을 가리키도록 스크롤 조정
               final newMouseTimeOffset = mouseTimeOffset * (oldZoom / _zoomLevel);
               _scrollOffset = (mouseAbsoluteTime - newMouseTimeOffset)
                   .clamp(0.0, widget.totalDuration - _viewportDuration);
             } else {
-              // 마우스 위치가 없는 경우 중앙 기준으로 확대/축소
               final centerTime = _viewportStart + (_viewportDuration / 2);
               
               if (event.logicalKey == LogicalKeyboardKey.keyW) {
-                _zoomLevel = (_zoomLevel * _zoomFactor).clamp(1.0, 10000.0);
+                _zoomLevel = (_zoomLevel * _zoomFactor)
+                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               } else {
-                _zoomLevel = (_zoomLevel / _zoomFactor).clamp(1.0, 10000.0);
+                _zoomLevel = (_zoomLevel / _zoomFactor)
+                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               }
 
               _viewportDuration = widget.totalDuration / _zoomLevel;
@@ -422,9 +454,9 @@ class TimelinePainter extends CustomPainter {
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
 
-    final rulerHeight = 20.0;
+    final rulerHeight = TraceViewerConfig.rulerHeight;
     final availableWidth = size.width - threadLabelWidth;
-    final trackHeight = 16.0;
+    final trackHeight = TraceViewerConfig.trackHeight;
     var currentY = 0.0;
 
     // 배경 그리기
@@ -526,18 +558,31 @@ class TimelinePainter extends CustomPainter {
       final left = dragStart!.dx.clamp(threadLabelWidth, size.width);
       final right = dragEnd!.dx.clamp(threadLabelWidth, size.width);
       
-      // 선택 영역 리기
-      final selectionRect = Rect.fromLTRB(
-        min(left, right),
+      // 선택되지 않은 영역에 회색 음영 처리
+      final leftOverlay = Rect.fromLTRB(
+        threadLabelWidth,
         0,
+        min(left, right),
+        size.height,
+      );
+      final rightOverlay = Rect.fromLTRB(
         max(left, right),
+        0,
+        size.width,
         size.height,
       );
 
+      // 선택되지 않은 영역 그리기
       canvas.drawRect(
-        selectionRect,
+        leftOverlay,
         Paint()
-          ..color = Colors.blue.withOpacity(0.2)
+          ..color = Colors.grey.withOpacity(TraceViewerConfig.selectionOverlayOpacity)
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawRect(
+        rightOverlay,
+        Paint()
+          ..color = Colors.grey.withOpacity(TraceViewerConfig.selectionOverlayOpacity)
           ..style = PaintingStyle.fill,
       );
 
@@ -579,7 +624,7 @@ class TimelinePainter extends CustomPainter {
 
       // 세로 가이드라인 그리기
       final guidelinePaint = Paint()
-        ..color = Colors.blue.withOpacity(0.5)
+        ..color = Colors.grey.withOpacity(TraceViewerConfig.guidelineOpacity)
         ..strokeWidth = 1
         ..style = PaintingStyle.stroke;
 
@@ -610,7 +655,7 @@ class TimelinePainter extends CustomPainter {
         Offset(mouseX, 0),
         Offset(mouseX, size.height),
         Paint()
-          ..color = Colors.grey.withOpacity(0.5)
+          ..color = Colors.grey.withOpacity(TraceViewerConfig.guidelineOpacity)
           ..strokeWidth = 0.5,
       );
 
@@ -652,7 +697,7 @@ class TimelinePainter extends CustomPainter {
         Offset(mouseX, 0),
         Offset(mouseX, size.height),
         Paint()
-          ..color = Colors.grey.withOpacity(0.5)
+          ..color = Colors.grey.withOpacity(TraceViewerConfig.guidelineOpacity)
           ..strokeWidth = 0.5,
       );
     }
@@ -669,7 +714,7 @@ class TimelinePainter extends CustomPainter {
       ..color = Colors.grey.shade50
       ..style = PaintingStyle.fill;
     
-    final rulerHeight = 20.0;  // 전체 높이를 20px로 감소
+    final rulerHeight = TraceViewerConfig.rulerHeight;  // 전체 높이를 20px로 감소
     
     canvas.drawRect(
       Rect.fromLTWH(leftOffset, 0, size.width, rulerHeight),
@@ -782,7 +827,7 @@ class TimelinePainter extends CustomPainter {
       fontSize: 10,
     ))
       ..pushStyle(textStyle)
-      ..addText('TID $tid');
+      ..addText('$tid');
     
     final paragraph = paragraphBuilder.build()
       ..layout(ui.ParagraphConstraints(width: width));
