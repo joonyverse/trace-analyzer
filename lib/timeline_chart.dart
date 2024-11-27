@@ -55,6 +55,9 @@ class _TimelineChartState extends State<TimelineChart> {
   Offset? _guidelinePosition;  // 마우스 가이드라인을 위한 별도 변수
   bool _isDragging = false;  // 드래그 상태 추적을 위한 변수 추가
 
+  final ScrollController _scrollController = ScrollController();  // 추가
+  double _verticalScrollOffset = 0.0;  // 추가
+
   @override
   void initState() {
     super.initState();
@@ -68,6 +71,7 @@ class _TimelineChartState extends State<TimelineChart> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
+    _scrollController.addListener(_handleScroll);  // 추가
   }
 
   void _handleFocusChange() {
@@ -266,6 +270,12 @@ class _TimelineChartState extends State<TimelineChart> {
     return right + 1;
   }
 
+  void _handleScroll() {  // 추가
+    setState(() {
+      _verticalScrollOffset = _scrollController.offset;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return FocusScope(
@@ -368,6 +378,7 @@ class _TimelineChartState extends State<TimelineChart> {
                     Padding(
                       padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
                       child: SingleChildScrollView(
+                        controller: _scrollController,  // 추가
                         scrollDirection: Axis.vertical,
                         child: SizedBox(
                           width: constraints.maxWidth,
@@ -388,6 +399,7 @@ class _TimelineChartState extends State<TimelineChart> {
                               lastMousePosition: _lastMousePosition,
                               guidelinePosition: _guidelinePosition,
                               isDragging: _isDragging,
+                              scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
                             ),
                           ),
                         ),
@@ -481,6 +493,7 @@ class _TimelineChartState extends State<TimelineChart> {
   void dispose() {
     _focusNode.removeListener(_handleFocusChange);
     _focusNode.dispose();
+    _scrollController.dispose();  // 추가
     super.dispose();
   }
 
@@ -501,6 +514,7 @@ class TimelinePainter extends CustomPainter {
   final Offset? lastMousePosition;
   final Offset? guidelinePosition;
   final bool isDragging;
+  final double scrollOffset;
 
   TimelinePainter({
     required this.events,
@@ -516,6 +530,7 @@ class TimelinePainter extends CustomPainter {
     this.lastMousePosition,
     this.guidelinePosition,
     required this.isDragging,
+    required this.scrollOffset,
   });
 
   String _formatTime(double timeMs) {
@@ -663,8 +678,7 @@ class TimelinePainter extends CustomPainter {
     if (dragStart != null && dragEnd != null && 
         (dragStart!.dx != dragEnd!.dx || dragStart!.dy != dragEnd!.dy)) {
       // 드래그 좌표를 스크롤 위치를 고려하여 조정
-      final adjustedDragStartY = dragStart!.dy - TraceViewerConfig.rulerHeight;
-      final adjustedDragEndY = dragEnd!.dy - TraceViewerConfig.rulerHeight;
+      final adjustedDragStartY = dragStart!.dy - TraceViewerConfig.rulerHeight + scrollOffset;
       
       final left = dragStart!.dx.clamp(threadLabelWidth, size.width);
       final right = dragEnd!.dx.clamp(threadLabelWidth, size.width);
