@@ -55,12 +55,13 @@ def generate_random_trace_data(event_count=500000):
         
         thread_events[tid].append(event)
     
-    # 시간 설정 부분도 문자열로 변환
+    # 시간 설정 부분 수정
     for tid, events in thread_events.items():
         current_time = 0
         for event in events:
-            event["ts"] = str(current_time)
-            current_time += int(event["dur"]) + random.randint(1, 5)
+            # 이벤트 시작 시간을 무작위로 설정하여 중첩 허용
+            event["ts"] = str(random.randint(current_time, current_time + 50))
+            current_time += int(event["dur"]) + random.randint(1, 20)
     
     # 모든 이벤트를 하나의 리스트로 합침
     all_events = [event for events in thread_events.values() for event in events]

@@ -3,14 +3,14 @@ class TraceViewerConfig {
   static const int chunkSize = 50000;  // 청크당 처리할 라인 수
   
   // 타임라인 차트 관련 설정
-  static const double initialZoomLevel = 100.0;  // 초기 줌 레벨
-  static const double zoomFactor = 1.1;  // 줌 인/아웃 시 배율
-  static const double scrollAmount = 10.0;  // 스크롤 단위
+  static const double initialZoomLevel = 1000.0;  // 초기 줌 레벨
+  static const double zoomFactor = 1.3;  // 줌 인/아웃 시 배율
+  static const double scrollAmount = 50.0;  // 스크롤 단위
   static const double dragThreshold = 5.0;  // 드래그 인식 임계값
   
   // 렌더링 최적화 관련 설정
-  static const int maxVisibleEvents = 10000;  // 최대 표시 이벤트 수 증가
-  static const double eventMinWidth = 0.5;  // 이벤트 최소 너비를 더 작게 조정
+  static const int maxVisibleEvents = 100000;  // 최대 표시 이벤트 수 증가
+  static const double eventMinWidth = 0;  // 이벤트 최소 너비를 더 작게 조정
   
   // UI 관련 설정
   static const double threadLabelWidth = 50.0;  // 스레드 라벨 너비
