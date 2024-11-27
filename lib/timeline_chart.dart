@@ -19,6 +19,30 @@ class TimelineChart extends StatefulWidget {
   State<TimelineChart> createState() => _TimelineChartState();
 }
 
+// EventStats 클래스를 최상위 수준으로 이동
+class EventStats {
+  final String secondWord;
+  final List<double> durations;
+  
+  EventStats(this.secondWord) : durations = [];
+  
+  void addDuration(double duration) {
+    // ms를 μs로 변환하여 저장 (1ms = 1000μs)
+    durations.add(duration * 1000);
+  }
+  
+  double get min => durations.reduce((a, b) => a < b ? a : b);
+  double get max => durations.reduce((a, b) => a > b ? a : b);
+  double get avg => durations.isEmpty ? 0 : durations.reduce((a, b) => a + b) / durations.length;
+  double get std {
+    if (durations.isEmpty) return 0;
+    final mean = avg;
+    final sumSquaredDiff = durations.fold(0.0, (sum, duration) => 
+      sum + pow(duration - mean, 2));
+    return sqrt(sumSquaredDiff / durations.length);
+  }
+}
+
 class _TimelineChartState extends State<TimelineChart> {
   final _focusNode = FocusNode();
   double _zoomLevel = TraceViewerConfig.initialZoomLevel;
@@ -130,6 +154,31 @@ class _TimelineChartState extends State<TimelineChart> {
     return nearestTime;
   }
 
+  // 통계 뷰 관련 변수 추가
+  bool _showStats = false;
+  static const double _statsViewHeight = 200.0;
+
+  // 통계 데이터 계산
+  Map<String, Map<String, EventStats>> _calculateStats() {
+    final stats = <String, Map<String, EventStats>>{};
+    
+    for (final event in widget.timelineEvents) {
+      final name = event['name'] as String;
+      final words = name.split(' ');
+      if (words.length < 2) continue;
+      
+      final firstWord = words[0];
+      final secondWord = words[1];
+      final duration = event['normalizedDuration'] as double;
+      
+      stats.putIfAbsent(firstWord, () => <String, EventStats>{});
+      stats[firstWord]!.putIfAbsent(secondWord, () => EventStats(secondWord));
+      stats[firstWord]![secondWord]!.addDuration(duration);
+    }
+    
+    return stats;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -205,7 +254,7 @@ class _TimelineChartState extends State<TimelineChart> {
   List<List<Map<String, dynamic>>> _assignTracksOptimized(List<Map<String, dynamic>> events) {
     if (events.isEmpty) return [];
     
-    // 각 트랙의 마지막 이벤트의 종료 시간을 저장
+    // 각 트랙의 마지막 이벤���의 종료 시간을 저장
     final trackEndTimes = <double>[];
     final tracks = <List<Map<String, dynamic>>>[];
     
@@ -350,157 +399,237 @@ class _TimelineChartState extends State<TimelineChart> {
 
   @override
   Widget build(BuildContext context) {
-    return FocusScope(
-      autofocus: true,
-      child: Focus(
-        focusNode: _focusNode,
-        onKey: (node, event) {
-          if (event is RawKeyDownEvent) {
-            _handleKeyEvent(event);
-          }
-          return KeyEventResult.handled;
-        },
-        child: MouseRegion(
-          onHover: (event) {
-            setState(() {
-              _lastMousePosition = event.localPosition;
-            });
-          },
-          onExit: (event) {
-            setState(() {
-              _lastMousePosition = null;
-            });
-          },
-          child: GestureDetector(
-            onTapDown: (_) => _focusNode.requestFocus(),
-            onPanStart: (details) {
-              _focusNode.requestFocus();
-              final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
-              final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
-              
-              setState(() {
-                _dragStartPosition = details.localPosition;
-                if (nearestTime != null) {
-                  // 스냅된 위치 계산
-                  final snappedX = _timeToX(nearestTime, availableWidth);
-                  _dragStart = Offset(snappedX, details.localPosition.dy);
-                } else {
-                  _dragStart = details.localPosition;
+    return Column(
+      children: [
+        Expanded(
+          child: FocusScope(
+            autofocus: true,
+            child: Focus(
+              focusNode: _focusNode,
+              onKey: (node, event) {
+                if (event is RawKeyDownEvent) {
+                  _handleKeyEvent(event);
                 }
-                _dragEnd = _dragStart;
-                _isDragging = true;
-              });
-            },
-            onPanUpdate: (details) {
-              if (_dragStartPosition != null) {
-                final dragDistance = (details.localPosition - _dragStartPosition!).distance;
-                if (dragDistance > _dragThreshold) {
-                  final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
-                  final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
-                  
+                return KeyEventResult.handled;
+              },
+              child: MouseRegion(
+                onHover: (event) {
                   setState(() {
-                    if (nearestTime != null) {
-                      // 스냅된 위치 계산
-                      final snappedX = _timeToX(nearestTime, availableWidth);
-                      _dragEnd = Offset(snappedX, details.localPosition.dy);
-                    } else {
-                      _dragEnd = details.localPosition;
+                    _lastMousePosition = event.localPosition;
+                  });
+                },
+                onExit: (event) {
+                  setState(() {
+                    _lastMousePosition = null;
+                  });
+                },
+                child: GestureDetector(
+                  onTapDown: (_) => _focusNode.requestFocus(),
+                  onPanStart: (details) {
+                    _focusNode.requestFocus();
+                    final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
+                    final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
+                    
+                    setState(() {
+                      _dragStartPosition = details.localPosition;
+                      if (nearestTime != null) {
+                        // 스냅된 위치 계산
+                        final snappedX = _timeToX(nearestTime, availableWidth);
+                        _dragStart = Offset(snappedX, details.localPosition.dy);
+                      } else {
+                        _dragStart = details.localPosition;
+                      }
+                      _dragEnd = _dragStart;
+                      _isDragging = true;
+                    });
+                  },
+                  onPanUpdate: (details) {
+                    if (_dragStartPosition != null) {
+                      final dragDistance = (details.localPosition - _dragStartPosition!).distance;
+                      if (dragDistance > _dragThreshold) {
+                        final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
+                        final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
+                        
+                        setState(() {
+                          if (nearestTime != null) {
+                            // 스냅된 위치 계산
+                            final snappedX = _timeToX(nearestTime, availableWidth);
+                            _dragEnd = Offset(snappedX, details.localPosition.dy);
+                          } else {
+                            _dragEnd = details.localPosition;
+                          }
+                        });
+                      }
                     }
-                  });
-                }
-              }
-            },
-            onPanEnd: (details) {
-              if (_dragStartPosition != null) {
-                final dragDistance = (_dragEnd! - _dragStartPosition!).distance;
-                if (dragDistance <= _dragThreshold) {
-                  setState(() {
-                    _dragStart = null;
-                    _dragEnd = null;
-                  });
-                }
-              }
-              setState(() {
-                _dragStartPosition = null;
-                _isDragging = false;
-              });
-            },
-            onPanCancel: () {
-              setState(() {
-                _dragStart = null;
-                _dragEnd = null;
-                _dragStartPosition = null;
-                _isDragging = false;
-              });
-            },
-            behavior: HitTestBehavior.translucent,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                _viewportDuration = widget.totalDuration / _zoomLevel;
-                _viewportStart = _scrollOffset.clamp(
-                  0.0,
-                  widget.totalDuration - _viewportDuration,
-                );
+                  },
+                  onPanEnd: (details) {
+                    if (_dragStartPosition != null) {
+                      final dragDistance = (_dragEnd! - _dragStartPosition!).distance;
+                      if (dragDistance <= _dragThreshold) {
+                        setState(() {
+                          _dragStart = null;
+                          _dragEnd = null;
+                        });
+                      }
+                    }
+                    setState(() {
+                      _dragStartPosition = null;
+                      _isDragging = false;
+                    });
+                  },
+                  onPanCancel: () {
+                    setState(() {
+                      _dragStart = null;
+                      _dragEnd = null;
+                      _dragStartPosition = null;
+                      _isDragging = false;
+                    });
+                  },
+                  behavior: HitTestBehavior.translucent,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      _viewportDuration = widget.totalDuration / _zoomLevel;
+                      _viewportStart = _scrollOffset.clamp(
+                        0.0,
+                        widget.totalDuration - _viewportDuration,
+                      );
 
-                double totalHeight = 0;
-                for (var tid in _sortedThreadIds) {
-                  final trackCount = _threadTrackCount[tid] ?? 1;
-                  totalHeight += trackCount * TraceViewerConfig.trackHeight;
-                }
+                      double totalHeight = 0;
+                      for (var tid in _sortedThreadIds) {
+                        final trackCount = _threadTrackCount[tid] ?? 1;
+                        totalHeight += trackCount * TraceViewerConfig.trackHeight;
+                      }
 
-                return Stack(
-                  children: [
-                    // 고정된 눈금자
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      height: TraceViewerConfig.rulerHeight,
-                      child: CustomPaint(
-                        painter: TimeRulerPainter(
-                          viewportStart: _viewportStart,
-                          viewportDuration: _viewportDuration,
-                          threadLabelWidth: TraceViewerConfig.threadLabelWidth,
-                        ),
-                      ),
-                    ),
-                    // 스크롤 가능한 타임라인 컨텐츠
-                    Padding(
-                      padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
-                      child: SingleChildScrollView(
-                        controller: _scrollController,  // 추가
-                        scrollDirection: Axis.vertical,
-                        child: SizedBox(
-                          width: constraints.maxWidth,
-                          height: totalHeight,
-                          child: CustomPaint(
-                            size: Size(constraints.maxWidth, totalHeight),
-                            painter: TimelinePainter(
-                              events: _getVisibleEvents(),
-                              threadIds: _sortedThreadIds,
-                              viewportStart: _viewportStart,
-                              viewportDuration: _viewportDuration,
-                              zoomLevel: _zoomLevel,
-                              totalDuration: widget.totalDuration,
-                              threadTrackCount: _threadTrackCount,
-                              dragStart: _dragStart,
-                              dragEnd: _dragEnd,
-                              threadLabelWidth: TraceViewerConfig.threadLabelWidth,
-                              lastMousePosition: _lastMousePosition,
-                              guidelinePosition: _guidelinePosition,
-                              isDragging: _isDragging,
-                              scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
+                      return Stack(
+                        children: [
+                          // 고정된 눈금자
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            height: TraceViewerConfig.rulerHeight,
+                            child: CustomPaint(
+                              painter: TimeRulerPainter(
+                                viewportStart: _viewportStart,
+                                viewportDuration: _viewportDuration,
+                                threadLabelWidth: TraceViewerConfig.threadLabelWidth,
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
+                          // 스크롤 가능한 타임라인 컨텐츠
+                          Padding(
+                            padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
+                            child: SingleChildScrollView(
+                              controller: _scrollController,  // 추가
+                              scrollDirection: Axis.vertical,
+                              child: SizedBox(
+                                width: constraints.maxWidth,
+                                height: totalHeight,
+                                child: CustomPaint(
+                                  size: Size(constraints.maxWidth, totalHeight),
+                                  painter: TimelinePainter(
+                                    events: _getVisibleEvents(),
+                                    threadIds: _sortedThreadIds,
+                                    viewportStart: _viewportStart,
+                                    viewportDuration: _viewportDuration,
+                                    zoomLevel: _zoomLevel,
+                                    totalDuration: widget.totalDuration,
+                                    threadTrackCount: _threadTrackCount,
+                                    dragStart: _dragStart,
+                                    dragEnd: _dragEnd,
+                                    threadLabelWidth: TraceViewerConfig.threadLabelWidth,
+                                    lastMousePosition: _lastMousePosition,
+                                    guidelinePosition: _guidelinePosition,
+                                    isDragging: _isDragging,
+                                    scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
             ),
           ),
         ),
+        // 통계 뷰 토글 버튼
+        Container(
+          height: 40,
+          color: Colors.grey.shade100,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton.icon(
+                icon: Icon(_showStats ? Icons.expand_more : Icons.expand_less),
+                label: Text(_showStats ? '통계 숨기기' : '통계 보기'),
+                onPressed: () {
+                  setState(() {
+                    _showStats = !_showStats;
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+        // 통계 뷰
+        if (_showStats)
+          Container(
+            height: _statsViewHeight,
+            color: Colors.white,
+            child: _buildStatsView(),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildStatsView() {
+    final stats = _calculateStats();
+    
+    return DefaultTabController(
+      length: stats.length,
+      child: Column(
+        children: [
+          TabBar(
+            isScrollable: true,
+            tabs: stats.keys.map((group) => Tab(text: group)).toList(),
+          ),
+          Expanded(
+            child: TabBarView(
+              children: stats.keys.map((group) => 
+                SingleChildScrollView(
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Operation')),
+                      DataColumn(label: Text('Min (μs)')),
+                      DataColumn(label: Text('Max (μs)')),
+                      DataColumn(label: Text('Avg (μs)')),
+                      DataColumn(label: Text('Std (μs)')),
+                      DataColumn(label: Text('Count')),
+                    ],
+                    rows: stats[group]!.entries.map((entry) {
+                      final secondWord = entry.key;
+                      final eventStats = entry.value;
+                      return DataRow(
+                        cells: [
+                          DataCell(Text(secondWord)),
+                          DataCell(Text(eventStats.min.toStringAsFixed(1))),
+                          DataCell(Text(eventStats.max.toStringAsFixed(1))),
+                          DataCell(Text(eventStats.avg.toStringAsFixed(1))),
+                          DataCell(Text(eventStats.std.toStringAsFixed(1))),
+                          DataCell(Text(eventStats.durations.length.toString())),
+                        ],
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ).toList(),
+            ),
+          ),
+        ],
       ),
     );
   }
