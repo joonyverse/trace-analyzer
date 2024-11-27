@@ -182,35 +182,70 @@ class _TimelineChartState extends State<TimelineChart> {
     _isRendering = true;
 
     final viewportEnd = _viewportStart + _viewportDuration;
-    List<Map<String, dynamic>> visibleEvents = [];
+    final visibleEventsByThread = <int, List<Map<String, dynamic>>>{};
     
     try {
+      // 1. 각 스레드별로 뷰포트 내 이벤트 수집 및 필터링
       for (var tid in _sortedThreadIds) {
         final events = _threadEvents[tid]!;
         int start = _binarySearch(events, _viewportStart);
         
-        int count = 0;
-        int maxEventsPerThread = _maxVisibleEvents ~/ _sortedThreadIds.length;
-        
-        for (var i = start; i < events.length && count < maxEventsPerThread; i++) {
+        final threadEvents = <Map<String, dynamic>>[];
+        for (var i = start; i < events.length; i++) {
           final event = events[i];
           final startTime = event['normalizedStartTime'] as double;
           if (startTime > viewportEnd) break;
           
           final duration = event['normalizedDuration'] as double;
-          final eventWidth = (duration / _viewportDuration) * _zoomLevel;
-          
-          if (eventWidth > TraceViewerConfig.eventMinWidth) {
-            visibleEvents.add(event);
-            count++;
+          if (duration > 0) {  // duration이 0인 이벤트는 제외
+            threadEvents.add(event);
           }
         }
+        
+        if (threadEvents.isNotEmpty) {
+          // 2. 각 스레드의 이벤트를 duration 기준으로 정렬
+          threadEvents.sort((a, b) => (b['normalizedDuration'] as double)
+              .compareTo(a['normalizedDuration'] as double));
+          visibleEventsByThread[tid] = threadEvents;
+        }
       }
+
+      // 3. 스레드별로 가장 긴 이벤트부터 선택
+      final visibleEvents = <Map<String, dynamic>>[];
+      int totalSelected = 0;
+      bool hasMoreEvents = true;
+      
+      while (hasMoreEvents && totalSelected < _maxVisibleEvents) {
+        hasMoreEvents = false;
+        
+        for (var tid in _sortedThreadIds) {
+          final threadEvents = visibleEventsByThread[tid];
+          if (threadEvents == null || threadEvents.isEmpty) continue;
+          
+          final event = threadEvents.removeAt(0);  // 가장 긴 이벤트 선택
+          visibleEvents.add(event);
+          totalSelected++;
+          
+          if (threadEvents.isNotEmpty) {
+            hasMoreEvents = true;
+          }
+          
+          if (totalSelected >= _maxVisibleEvents) break;
+        }
+      }
+
+      // 4. 최종 정렬: 스레드 ID -> 시작 시간 순
+      visibleEvents.sort((a, b) {
+        final tidCompare = (a['tid'] as int).compareTo(b['tid'] as int);
+        if (tidCompare != 0) return tidCompare;
+        return (a['normalizedStartTime'] as double)
+            .compareTo(b['normalizedStartTime'] as double);
+      });
+
+      return visibleEvents;
     } finally {
       _isRendering = false;
     }
-    
-    return visibleEvents;
   }
 
   int _binarySearch(List<Map<String, dynamic>> events, double targetTime) {
@@ -310,34 +345,55 @@ class _TimelineChartState extends State<TimelineChart> {
                 double totalHeight = 0;
                 for (var tid in _sortedThreadIds) {
                   final trackCount = _threadTrackCount[tid] ?? 1;
-                  totalHeight += trackCount * 16.0;
+                  totalHeight += trackCount * TraceViewerConfig.trackHeight;
                 }
-                totalHeight += 20.0;
 
-                return SingleChildScrollView(
-                  scrollDirection: Axis.vertical,
-                  child: SizedBox(
-                    width: constraints.maxWidth,
-                    height: totalHeight,
-                    child: CustomPaint(
-                      size: Size(constraints.maxWidth, totalHeight),
-                      painter: TimelinePainter(
-                        events: _getVisibleEvents(),
-                        threadIds: _sortedThreadIds,
-                        viewportStart: _viewportStart,
-                        viewportDuration: _viewportDuration,
-                        zoomLevel: _zoomLevel,
-                        totalDuration: widget.totalDuration,
-                        threadTrackCount: _threadTrackCount,
-                        dragStart: _dragStart,
-                        dragEnd: _dragEnd,
-                        threadLabelWidth: 50.0,
-                        lastMousePosition: _lastMousePosition,
-                        guidelinePosition: _guidelinePosition,
-                        isDragging: _isDragging,
+                return Stack(
+                  children: [
+                    // 고정된 눈금자
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: TraceViewerConfig.rulerHeight,
+                      child: CustomPaint(
+                        painter: TimeRulerPainter(
+                          viewportStart: _viewportStart,
+                          viewportDuration: _viewportDuration,
+                          threadLabelWidth: TraceViewerConfig.threadLabelWidth,
+                        ),
                       ),
                     ),
-                  ),
+                    // 스크롤 가능한 타임라인 컨텐츠
+                    Padding(
+                      padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.vertical,
+                        child: SizedBox(
+                          width: constraints.maxWidth,
+                          height: totalHeight,
+                          child: CustomPaint(
+                            size: Size(constraints.maxWidth, totalHeight),
+                            painter: TimelinePainter(
+                              events: _getVisibleEvents(),
+                              threadIds: _sortedThreadIds,
+                              viewportStart: _viewportStart,
+                              viewportDuration: _viewportDuration,
+                              zoomLevel: _zoomLevel,
+                              totalDuration: widget.totalDuration,
+                              threadTrackCount: _threadTrackCount,
+                              dragStart: _dragStart,
+                              dragEnd: _dragEnd,
+                              threadLabelWidth: TraceViewerConfig.threadLabelWidth,
+                              lastMousePosition: _lastMousePosition,
+                              guidelinePosition: _guidelinePosition,
+                              isDragging: _isDragging,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -448,13 +504,26 @@ class TimelinePainter extends CustomPainter {
     required this.isDragging,
   });
 
+  String _formatTime(double timeMs) {
+    if (timeMs >= 1000000) {
+      return '${(timeMs/1000000).toStringAsFixed(2)}ks';
+    } else if (timeMs >= 1000) {
+      return '${(timeMs/1000).toStringAsFixed(2)}s';
+    } else if (timeMs >= 1) {
+      return '${timeMs.toStringAsFixed(2)}ms';
+    } else if (timeMs >= 0.001) {
+      return '${(timeMs * 1000).toStringAsFixed(2)}μs';
+    } else {
+      return '${(timeMs * 1000000).toStringAsFixed(2)}ns';
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
 
-    final rulerHeight = TraceViewerConfig.rulerHeight;
     final availableWidth = size.width - threadLabelWidth;
     final trackHeight = TraceViewerConfig.trackHeight;
     var currentY = 0.0;
@@ -464,10 +533,6 @@ class TimelinePainter extends CustomPainter {
       Rect.fromLTWH(0, 0, size.width, size.height),
       Paint()..color = Colors.white,
     );
-
-    // 시간 눈금자 그리기
-    _drawTimeRuler(canvas, Size(availableWidth, rulerHeight), threadLabelWidth);
-    canvas.translate(0, rulerHeight);
 
     // 트랙과 이벤트 그리기
     for (var tid in threadIds) {
@@ -552,9 +617,10 @@ class TimelinePainter extends CustomPainter {
     // 드래그 선택 영역 그리기 (맨 마지막에 그려서 항상 위에 보이도록)
     if (dragStart != null && dragEnd != null && 
         (dragStart!.dx != dragEnd!.dx || dragStart!.dy != dragEnd!.dy)) {
-      // 캔버스를 원래 위치로 되돌리기
-      canvas.translate(0, -rulerHeight);
-
+      // 드래그 좌표를 스크롤 위치를 고려하여 조정
+      final adjustedDragStartY = dragStart!.dy - TraceViewerConfig.rulerHeight;
+      final adjustedDragEndY = dragEnd!.dy - TraceViewerConfig.rulerHeight;
+      
       final left = dragStart!.dx.clamp(threadLabelWidth, size.width);
       final right = dragEnd!.dx.clamp(threadLabelWidth, size.width);
       
@@ -588,9 +654,9 @@ class TimelinePainter extends CustomPainter {
 
       // 선택 구간의 시간 계산
       final startTime = viewportStart + 
-          ((min(left, right) - threadLabelWidth) / availableWidth) * viewportDuration;
+          ((min(left, right) - threadLabelWidth) / (size.width - threadLabelWidth)) * viewportDuration;
       final endTime = viewportStart + 
-          ((max(left, right) - threadLabelWidth) / availableWidth) * viewportDuration;
+          ((max(left, right) - threadLabelWidth) / (size.width - threadLabelWidth)) * viewportDuration;
       final duration = endTime - startTime;
 
       // 선택 구간 시간 표시
@@ -613,12 +679,12 @@ class TimelinePainter extends CustomPainter {
       final paragraph = paragraphBuilder.build()
         ..layout(ui.ParagraphConstraints(width: 200));
 
-      // 시간 정보를 드래그 시작 높이에 표시
+      // 시간 정보를 드래그 시작 높이에 표시 (스크롤 위치 고려)
       canvas.drawParagraph(
         paragraph,
         Offset(
           (left + right - paragraph.width) / 2,
-          dragStart!.dy,  // 드래그 시작 높이에 표시
+          adjustedDragStartY,  // 조정된 Y 좌표 사용
         ),
       );
 
@@ -703,119 +769,6 @@ class TimelinePainter extends CustomPainter {
     }
   }
 
-  void _drawTimeRuler(Canvas canvas, Size size, double leftOffset) {
-    final paint = Paint()
-      ..color = Colors.grey.shade400
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;  // 선 두께 감소
-
-    // 눈금자 배경
-    final bgPaint = Paint()
-      ..color = Colors.grey.shade50
-      ..style = PaintingStyle.fill;
-    
-    final rulerHeight = TraceViewerConfig.rulerHeight;  // 전체 높이를 20px로 감소
-    
-    canvas.drawRect(
-      Rect.fromLTWH(leftOffset, 0, size.width, rulerHeight),
-      bgPaint,
-    );
-
-    // 주요 간격 (10개 구간)
-    final majorIntervalWidth = size.width / 10;
-    final timeInterval = viewportDuration / 10;
-
-    // 보조 간격 (각 주요 간격을 5개로 분할)
-    final minorIntervalWidth = majorIntervalWidth / 5;
-
-    // 텍스트 스타일 설정
-    final textStyle = ui.TextStyle(
-      color: Colors.black87,
-      fontSize: 10,  // 8에서 10으로 증가
-    );
-
-    // 보조 눈금 그리기
-    for (var i = 0; i <= 50; i++) {
-      final x = i * minorIntervalWidth + leftOffset;
-      final isMajor = i % 5 == 0;
-      
-      // 눈금 선 그리기
-      canvas.drawLine(
-        Offset(x, rulerHeight - (isMajor ? 6 : 3)),  // 주요 눈금은 더 길게
-        Offset(x, rulerHeight),
-        paint,
-      );
-
-      // 주요 눈금에만 시간 표시
-      if (isMajor) {
-        final time = viewportStart + ((i / 5) * timeInterval);
-        final timeText = _formatTime(time);
-        
-        final paragraphBuilder = ui.ParagraphBuilder(ui.ParagraphStyle(
-          textAlign: TextAlign.center,
-          fontSize: 10,
-          height: 1.0,  // 줄 높이 감소
-        ))
-          ..pushStyle(textStyle)
-          ..addText(timeText);
-
-        final paragraph = paragraphBuilder.build()
-          ..layout(ui.ParagraphConstraints(width: majorIntervalWidth));
-
-        canvas.drawParagraph(
-          paragraph,
-          Offset(x - majorIntervalWidth/2, 1),  // 상단 여백 감소
-        );
-      }
-    }
-
-    // 눈금자 테두리
-    canvas.drawRect(
-      Rect.fromLTWH(leftOffset, 0, size.width, rulerHeight),
-      paint..strokeWidth = 0.5,  // 테두리 두께도 감소
-    );
-    
-    // 하단 경계선은 좀 더 진하게
-    canvas.drawLine(
-      Offset(leftOffset, rulerHeight),
-      Offset(leftOffset + size.width, rulerHeight),
-      paint..strokeWidth = 1.0,
-    );
-  }
-
-  String _formatTime(double timeMs) {
-    if (timeMs >= 1000000) {
-      return '${(timeMs/1000000).toStringAsFixed(2)}ks';
-    } else if (timeMs >= 1000) {
-      return '${(timeMs/1000).toStringAsFixed(2)}s';
-    } else if (timeMs >= 1) {
-      return '${timeMs.toStringAsFixed(2)}ms';
-    } else if (timeMs >= 0.001) {
-      return '${(timeMs * 1000).toStringAsFixed(2)}μs';
-    } else {
-      return '${(timeMs * 1000000).toStringAsFixed(2)}ns';
-    }
-  }
-
-  void _drawGrid(Canvas canvas, Size size, double threadLabelWidth, double trackHeight) {
-    final paint = Paint()
-      ..color = Colors.grey.withOpacity(0.2)
-      ..strokeWidth = 1;
-
-    // 수직 그리드
-    final gridInterval = (size.width - threadLabelWidth) / 10;
-    for (var i = 0; i <= 10; i++) {
-      final x = i * gridInterval + threadLabelWidth;
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-
-    // 수평 그리드
-    for (var i = 0; i <= threadIds.length; i++) {
-      final y = i * trackHeight;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
   void _drawThreadLabel(Canvas canvas, int tid, double y, double width, double height) {
     final textStyle = ui.TextStyle(
       color: Colors.black87,
@@ -857,4 +810,101 @@ class TimelinePainter extends CustomPainter {
       viewportStart != oldDelegate.viewportStart ||
       viewportDuration != oldDelegate.viewportDuration ||
       zoomLevel != oldDelegate.zoomLevel;
+}
+
+class TimeRulerPainter extends CustomPainter {
+  final double viewportStart;
+  final double viewportDuration;
+  final double threadLabelWidth;
+
+  TimeRulerPainter({
+    required this.viewportStart,
+    required this.viewportDuration,
+    required this.threadLabelWidth,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.grey.shade400
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.5;
+
+    // 눈금자 배경
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, TraceViewerConfig.rulerHeight),
+      Paint()..color = Colors.grey.shade50,
+    );
+
+    // 주요 간격 (10개 구간)
+    final majorIntervalWidth = (size.width - threadLabelWidth) / 10;
+    final timeInterval = viewportDuration / 10;
+
+    // 보조 간격 (각 주요 간격을 5개로 분할)
+    final minorIntervalWidth = majorIntervalWidth / 5;
+
+    // 텍스트 스타일 설정
+    final textStyle = ui.TextStyle(
+      color: Colors.black87,
+      fontSize: TraceViewerConfig.timelineFontSize,
+    );
+
+    // 보조 눈금 그리기
+    for (var i = 0; i <= 50; i++) {
+      final x = i * minorIntervalWidth + threadLabelWidth;
+      final isMajor = i % 5 == 0;
+      
+      canvas.drawLine(
+        Offset(x, TraceViewerConfig.rulerHeight - (isMajor ? 6 : 3)),
+        Offset(x, TraceViewerConfig.rulerHeight),
+        paint,
+      );
+
+      if (isMajor) {
+        final time = viewportStart + ((i / 5) * timeInterval);
+        final timeText = _formatTime(time);
+        
+        final paragraphBuilder = ui.ParagraphBuilder(ui.ParagraphStyle(
+          textAlign: TextAlign.center,
+          fontSize: TraceViewerConfig.timelineFontSize,
+          height: 1.0,
+        ))
+          ..pushStyle(textStyle)
+          ..addText(timeText);
+
+        final paragraph = paragraphBuilder.build()
+          ..layout(ui.ParagraphConstraints(width: majorIntervalWidth));
+
+        canvas.drawParagraph(
+          paragraph,
+          Offset(x - majorIntervalWidth/2, 1),
+        );
+      }
+    }
+
+    // 테두리
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, TraceViewerConfig.rulerHeight),
+      paint,
+    );
+  }
+
+  String _formatTime(double timeMs) {
+    if (timeMs >= 1000000) {
+      return '${(timeMs/1000000).toStringAsFixed(2)}ks';
+    } else if (timeMs >= 1000) {
+      return '${(timeMs/1000).toStringAsFixed(2)}s';
+    } else if (timeMs >= 1) {
+      return '${timeMs.toStringAsFixed(2)}ms';
+    } else if (timeMs >= 0.001) {
+      return '${(timeMs * 1000).toStringAsFixed(2)}μs';
+    } else {
+      return '${(timeMs * 1000000).toStringAsFixed(2)}ns';
+    }
+  }
+
+  @override
+  bool shouldRepaint(TimeRulerPainter oldDelegate) =>
+      viewportStart != oldDelegate.viewportStart ||
+      viewportDuration != oldDelegate.viewportDuration;
 } 

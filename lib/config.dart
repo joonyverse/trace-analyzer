@@ -9,7 +9,7 @@ class TraceViewerConfig {
   static const double dragThreshold = 5.0;  // 드래그 인식 임계값
   
   // 렌더링 최적화 관련 설정
-  static const int maxVisibleEvents = 100000;  // 최대 표시 이벤트 수 증가
+  static const int maxVisibleEvents = 10000;  // 최대 표시 이벤트 수 증가
   static const double eventMinWidth = 0;  // 이벤트 최소 너비를 더 작게 조정
   
   // UI 관련 설정
