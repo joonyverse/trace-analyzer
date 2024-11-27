@@ -538,10 +538,41 @@ class TimelinePainter extends CustomPainter {
     for (var tid in threadIds) {
       final trackCount = threadTrackCount[tid] ?? 1;
       
-      // 스레드 레이블 배경
+      // 스레드 구분선 그리기 (더 진하게)
+      if (currentY > 0) {
+        // 구분선 배경
+        canvas.drawRect(
+          Rect.fromLTWH(0, currentY - 1, size.width, 2),
+          Paint()
+            ..color = Colors.grey.shade200
+            ..style = PaintingStyle.fill,
+        );
+        
+        // 실제 구분선
+        canvas.drawLine(
+          Offset(0, currentY),
+          Offset(size.width, currentY),
+          Paint()
+            ..color = Colors.grey.shade400  // 색상을 더 진하게
+            ..strokeWidth = 0.7  // 두께 증가
+            ..style = PaintingStyle.stroke,
+        );
+      }
+      
+      // 스레드 레이블 배경 (약간 더 진한 색상)
       canvas.drawRect(
         Rect.fromLTWH(0, currentY, threadLabelWidth, trackHeight * trackCount),
-        Paint()..color = Colors.grey.shade100,
+        Paint()..color = Colors.grey.shade200,  // 배경색을 더 진하게
+      );
+      
+      // 스레드 레이블의 오른쪽 경계선
+      canvas.drawLine(
+        Offset(threadLabelWidth, currentY),
+        Offset(threadLabelWidth, currentY + trackHeight * trackCount),
+        Paint()
+          ..color = Colors.grey.shade400  // 색상을 더 진하게
+          ..strokeWidth = 0.7  // 두께 증가
+          ..style = PaintingStyle.stroke,
       );
       
       // 스레드 레이블 그리기
