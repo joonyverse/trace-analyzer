@@ -8,11 +8,13 @@ import 'config.dart';
 class TimelineChart extends StatefulWidget {
   final List<Map<String, dynamic>> timelineEvents;
   final double totalDuration;
+  final VoidCallback? onFileUpload;
 
   const TimelineChart({
     super.key,
     required this.timelineEvents,
     required this.totalDuration,
+    this.onFileUpload,
   });
 
   @override
@@ -31,8 +33,8 @@ class EventStats {
     durations.add(duration * 1000);
   }
   
-  double get min => durations.reduce((a, b) => a < b ? a : b);
-  double get max => durations.reduce((a, b) => a > b ? a : b);
+  double get min => durations.isEmpty ? 0 : durations.reduce((a, b) => a < b ? a : b);
+  double get max => durations.isEmpty ? 0 : durations.reduce((a, b) => a > b ? a : b);
   double get avg => durations.isEmpty ? 0 : durations.reduce((a, b) => a + b) / durations.length;
   double get std {
     if (durations.isEmpty) return 0;
@@ -75,7 +77,7 @@ class _TimelineChartState extends State<TimelineChart> {
   static const double _dragThreshold = TraceViewerConfig.dragThreshold;
   Offset? _dragStartPosition;  // 드래그 시작 위치 저장용
 
-  // 마우스 가이드라인 관련 변수들
+  // 마우스 이드라인 관련 변수들
   Offset? _guidelinePosition;  // 마우스 가이드라인을 위한 별도 변수
   bool _isDragging = false;  // 드래그 상태 추적을 위한 변수 추가
 
@@ -143,7 +145,7 @@ class _TimelineChartState extends State<TimelineChart> {
         nearestTime = startTime;
       }
 
-      // 종료 시점과의 거리 확인
+      // 종료 시점과의 거리 확
       final endDistance = (mouseTime - endTime).abs();
       if (endDistance < minDistance) {
         minDistance = endDistance;
@@ -200,6 +202,58 @@ class _TimelineChartState extends State<TimelineChart> {
     return stats;
   }
 
+  // 검색 관련 변수 추가
+  final TextEditingController _searchController = TextEditingController();
+  bool _isRegexSearch = false;
+  List<Map<String, dynamic>>? _searchResults;
+  bool _showSearchStats = false;
+
+  // 검색 결과에 대한 통계 계산
+  EventStats _calculateSearchStats(List<Map<String, dynamic>> events) {
+    if (events.isEmpty) {
+      return EventStats('Search Results');  // 빈 결과 처리
+    }
+    final stats = EventStats('Search Results');
+    for (final event in events) {
+      stats.addDuration(event['normalizedDuration'] as double);
+    }
+    return stats;
+  }
+
+  // 검색 실행
+  void _performSearch(String query) {
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = null;
+        _showSearchStats = false;
+      });
+      return;
+    }
+
+    try {
+      final Pattern pattern = _isRegexSearch ? RegExp(query) : query;
+      final results = widget.timelineEvents.where((event) {
+        final name = event['name'] as String;
+        return pattern is RegExp 
+            ? pattern.hasMatch(name)
+            : name.toLowerCase().contains(query.toLowerCase());
+      }).toList();
+
+      setState(() {
+        _searchResults = results;
+        _showSearchStats = true;  // 결과가 없어도 통계는 표시
+      });
+    } catch (e) {
+      // 정규식 오류 처리
+      setState(() {
+        _searchResults = [];
+        _showSearchStats = true;  // 오류 시에도 "결과 음" 메시지 표시
+      });
+    }
+  }
+
+  bool _isLoading = false;
+
   @override
   void initState() {
     super.initState();
@@ -217,8 +271,8 @@ class _TimelineChartState extends State<TimelineChart> {
   }
 
   void _handleFocusChange() {
-    if (!_focusNode.hasFocus) {
-      // 포커스를 잃었을 때 자동으로 다시 포커스 요청
+    // 검색 입력란이 포커스를 가지고 있을 때는 타임라인 포커스를 요청하지 않음
+    if (!_focusNode.hasFocus && !_searchController.value.selection.isValid) {
       _focusNode.requestFocus();
     }
   }
@@ -418,254 +472,425 @@ class _TimelineChartState extends State<TimelineChart> {
     });
   }
 
+  // 통계 패널 높이 관련 변수 추가
+  double _statsHeight = 200.0;
+  static const double _minStatsHeight = 100.0;
+  static const double _maxStatsHeight = 500.0;
+  bool _isResizing = false;
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
-          child: FocusScope(
-            autofocus: true,
-            child: Focus(
-              focusNode: _focusNode,
-              onKey: (node, event) {
-                if (event is RawKeyDownEvent) {
-                  _handleKeyEvent(event);
-                }
-                return KeyEventResult.handled;
-              },
-              child: MouseRegion(
-                onHover: (event) {
-                  setState(() {
-                    _lastMousePosition = event.localPosition;
-                  });
-                },
-                onExit: (event) {
-                  setState(() {
-                    _lastMousePosition = null;
-                  });
-                },
-                child: GestureDetector(
-                  onTapDown: (_) => _focusNode.requestFocus(),
-                  onPanStart: (details) {
-                    _focusNode.requestFocus();
-                    final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
-                    final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
-                    
-                    setState(() {
-                      _dragStartPosition = details.localPosition;
-                      if (nearestTime != null) {
-                        // 스냅된 위치 계산
-                        final snappedX = _timeToX(nearestTime, availableWidth);
-                        _dragStart = Offset(snappedX, details.localPosition.dy);
-                      } else {
-                        _dragStart = details.localPosition;
-                      }
-                      _dragEnd = _dragStart;
-                      _isDragging = true;
-                    });
+          child: Stack(
+            children: [
+              FocusScope(
+                child: Focus(
+                  focusNode: _focusNode,
+                  onKey: (node, event) {
+                    // 검색 입력란이 포커스를 가지고 있을 때는 키 이벤트를 처리하지 않음
+                    if (_searchController.value.selection.isValid) {
+                      return KeyEventResult.ignored;
+                    }
+                    if (event is RawKeyDownEvent) {
+                      _handleKeyEvent(event);
+                    }
+                    return KeyEventResult.handled;
                   },
-                  onPanUpdate: (details) {
-                    if (_dragStartPosition != null) {
-                      final dragDistance = (details.localPosition - _dragStartPosition!).distance;
-                      if (dragDistance > _dragThreshold) {
+                  child: MouseRegion(
+                    onHover: (event) {
+                      setState(() {
+                        _lastMousePosition = event.localPosition;
+                      });
+                    },
+                    onExit: (event) {
+                      setState(() {
+                        _lastMousePosition = null;
+                      });
+                    },
+                    child: GestureDetector(
+                      onTapDown: (_) => _focusNode.requestFocus(),
+                      onPanStart: (details) {
+                        _focusNode.requestFocus();
                         final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
                         final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
                         
                         setState(() {
+                          _dragStartPosition = details.localPosition;
                           if (nearestTime != null) {
                             // 스냅된 위치 계산
                             final snappedX = _timeToX(nearestTime, availableWidth);
-                            _dragEnd = Offset(snappedX, details.localPosition.dy);
+                            _dragStart = Offset(snappedX, details.localPosition.dy);
                           } else {
-                            _dragEnd = details.localPosition;
+                            _dragStart = details.localPosition;
                           }
+                          _dragEnd = _dragStart;
+                          _isDragging = true;
                         });
-                      }
-                    }
-                  },
-                  onPanEnd: (details) {
-                    if (_dragStartPosition != null) {
-                      final dragDistance = (_dragEnd! - _dragStartPosition!).distance;
-                      if (dragDistance <= _dragThreshold) {
+                      },
+                      onPanUpdate: (details) {
+                        if (_dragStartPosition != null) {
+                          final dragDistance = (details.localPosition - _dragStartPosition!).distance;
+                          if (dragDistance > _dragThreshold) {
+                            final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
+                            final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
+                            
+                            setState(() {
+                              if (nearestTime != null) {
+                                // 스냅된 위치 계산
+                                final snappedX = _timeToX(nearestTime, availableWidth);
+                                _dragEnd = Offset(snappedX, details.localPosition.dy);
+                              } else {
+                                _dragEnd = details.localPosition;
+                              }
+                            });
+                          }
+                        }
+                      },
+                      onPanEnd: (details) {
+                        if (_dragStartPosition != null) {
+                          final dragDistance = (_dragEnd! - _dragStartPosition!).distance;
+                          if (dragDistance <= _dragThreshold) {
+                            setState(() {
+                              _dragStart = null;
+                              _dragEnd = null;
+                            });
+                          }
+                        }
+                        setState(() {
+                          _dragStartPosition = null;
+                          _isDragging = false;
+                        });
+                      },
+                      onPanCancel: () {
                         setState(() {
                           _dragStart = null;
                           _dragEnd = null;
+                          _dragStartPosition = null;
+                          _isDragging = false;
                         });
-                      }
-                    }
-                    setState(() {
-                      _dragStartPosition = null;
-                      _isDragging = false;
-                    });
-                  },
-                  onPanCancel: () {
-                    setState(() {
-                      _dragStart = null;
-                      _dragEnd = null;
-                      _dragStartPosition = null;
-                      _isDragging = false;
-                    });
-                  },
-                  behavior: HitTestBehavior.translucent,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      _viewportDuration = widget.totalDuration / _zoomLevel;
-                      _viewportStart = _scrollOffset.clamp(
-                        0.0,
-                        widget.totalDuration - _viewportDuration,
-                      );
+                      },
+                      behavior: HitTestBehavior.translucent,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          _viewportDuration = widget.totalDuration / _zoomLevel;
+                          _viewportStart = _scrollOffset.clamp(
+                            0.0,
+                            widget.totalDuration - _viewportDuration,
+                          );
 
-                      double totalHeight = 0;
-                      for (var tid in _sortedThreadIds) {
-                        final trackCount = _threadTrackCount[tid] ?? 1;
-                        totalHeight += trackCount * TraceViewerConfig.trackHeight;
-                      }
+                          double totalHeight = 0;
+                          for (var tid in _sortedThreadIds) {
+                            final trackCount = _threadTrackCount[tid] ?? 1;
+                            totalHeight += trackCount * TraceViewerConfig.trackHeight;
+                          }
 
-                      return Stack(
-                        children: [
-                          // 고정된 눈금자
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            height: TraceViewerConfig.rulerHeight,
-                            child: CustomPaint(
-                              painter: TimeRulerPainter(
-                                viewportStart: _viewportStart,
-                                viewportDuration: _viewportDuration,
-                                threadLabelWidth: TraceViewerConfig.threadLabelWidth,
-                              ),
-                            ),
-                          ),
-                          // 스크롤 가능한 타임라인 컨텐츠
-                          Padding(
-                            padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
-                            child: SingleChildScrollView(
-                              controller: _scrollController,  // 추가
-                              scrollDirection: Axis.vertical,
-                              child: SizedBox(
-                                width: constraints.maxWidth,
-                                height: totalHeight,
+                          return Stack(
+                            children: [
+                              // 고정된 눈금자
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                height: TraceViewerConfig.rulerHeight,
                                 child: CustomPaint(
-                                  size: Size(constraints.maxWidth, totalHeight),
-                                  painter: TimelinePainter(
-                                    events: _getVisibleEvents(),
-                                    threadIds: _sortedThreadIds,
+                                  painter: TimeRulerPainter(
                                     viewportStart: _viewportStart,
                                     viewportDuration: _viewportDuration,
-                                    zoomLevel: _zoomLevel,
-                                    totalDuration: widget.totalDuration,
-                                    threadTrackCount: _threadTrackCount,
-                                    dragStart: _dragStart,
-                                    dragEnd: _dragEnd,
                                     threadLabelWidth: TraceViewerConfig.threadLabelWidth,
-                                    lastMousePosition: _lastMousePosition,
-                                    guidelinePosition: _guidelinePosition,
-                                    isDragging: _isDragging,
-                                    scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+                              // 스크롤 가능한 타임라인 컨텐츠
+                              Padding(
+                                padding: EdgeInsets.only(top: TraceViewerConfig.rulerHeight),
+                                child: SingleChildScrollView(
+                                  controller: _scrollController,  // 추가
+                                  scrollDirection: Axis.vertical,
+                                  child: SizedBox(
+                                    width: constraints.maxWidth,
+                                    height: totalHeight,
+                                    child: CustomPaint(
+                                      size: Size(constraints.maxWidth, totalHeight),
+                                      painter: TimelinePainter(
+                                        events: _getVisibleEvents(),
+                                        threadIds: _sortedThreadIds,
+                                        viewportStart: _viewportStart,
+                                        viewportDuration: _viewportDuration,
+                                        zoomLevel: _zoomLevel,
+                                        totalDuration: widget.totalDuration,
+                                        threadTrackCount: _threadTrackCount,
+                                        dragStart: _dragStart,
+                                        dragEnd: _dragEnd,
+                                        threadLabelWidth: TraceViewerConfig.threadLabelWidth,
+                                        lastMousePosition: _lastMousePosition,
+                                        guidelinePosition: _guidelinePosition,
+                                        isDragging: _isDragging,
+                                        scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
+              // 파일 업로드 버튼을 오른쪽 위로 이동
+              if (widget.onFileUpload != null)
+                Positioned(
+                  top: 8,  // 위쪽으로 이동
+                  right: 8,
+                  child: FloatingActionButton(
+                    mini: true,
+                    onPressed: _isLoading ? null : widget.onFileUpload,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.upload_file, size: 20),
+                  ),
+                ),
+            ],
           ),
         ),
-        // 통계 뷰 토글 버튼
+        // 통계 패널의 높이와 디자인 조정
         Container(
-          height: 40,
-          color: Colors.grey.shade100,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          height: _statsHeight,
+          padding: const EdgeInsets.all(12.0),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12.0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 4,
+                offset: const Offset(0, -2),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextButton.icon(
-                icon: Icon(_showStats ? Icons.expand_more : Icons.expand_less),
-                label: Text(_showStats ? '통계 숨기기' : '통계 보기'),
-                onPressed: () {
+              // 드래그 핸들 추가
+              GestureDetector(
+                onVerticalDragUpdate: (details) {
                   setState(() {
-                    _showStats = !_showStats;
+                    _statsHeight = (_statsHeight - details.delta.dy)
+                        .clamp(_minStatsHeight, _maxStatsHeight);
                   });
                 },
+                child: Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  Text(
+                    '통계',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: Icon(
+                      _statsHeight <= _minStatsHeight ? Icons.expand_less : Icons.expand_more,
+                      size: 20,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _statsHeight = _statsHeight <= _minStatsHeight 
+                            ? 200.0
+                            : _minStatsHeight;
+                      });
+                    },
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              // 여기서 실제 통계 뷰를 표시
+              Expanded(
+                child: _buildStatsView(),  // 실제 통계 데이터를 표시하는 위젯 호출
               ),
             ],
           ),
         ),
-        // 통계 뷰
-        if (_showStats)
-          Container(
-            height: _statsViewHeight,
-            color: Colors.white,
-            child: _buildStatsView(),
-          ),
       ],
     );
   }
 
   Widget _buildStatsView() {
-    // 통계 데이터를 한 번만 계산
     final stats = _calculateStats();
     
     return DefaultTabController(
       length: stats.length,
       child: Column(
         children: [
-          Material(  // TabBar를 Material 위젯으로 감싸기
+          // 검색 바 - 더 컴팩트하게 수정
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 32, // 높이 감소
+                    child: TextFormField(
+                      controller: _searchController,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: InputDecoration(
+                        hintText: '이벤트 이름 검색...',
+                        hintStyle: const TextStyle(fontSize: 12),
+                        prefixIcon: const Icon(Icons.search, size: 16),
+                        suffixIcon: _searchController.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 16),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  _performSearch('');
+                                },
+                              )
+                            : null,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                      ),
+                      onChanged: _performSearch,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                // 정규식 토글 버튼 크기 감소
+                SizedBox(
+                  height: 32,
+                  child: ToggleButtons(
+                    isSelected: [_isRegexSearch],
+                    onPressed: (index) {
+                      setState(() {
+                        _isRegexSearch = !_isRegexSearch;
+                        _performSearch(_searchController.text);
+                      });
+                    },
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    children: const [
+                      Tooltip(
+                        message: '정규식 검색',
+                        child: Text('.*', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          // 검색 결과 통계 - 컴팩트한 디자인
+          if (_searchResults != null && _showSearchStats)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '검색 결과: ${_searchResults!.length}개 이벤트',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      if (_searchResults!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        _buildSearchStats(_searchResults!),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          // 탭바 - 높이 감소
+          Material(
             color: Colors.white,
             child: TabBar(
               isScrollable: true,
-              tabs: stats.keys.map((group) => Tab(text: group)).toList(),
-              labelColor: Colors.blue,  // 선택된 탭 색상
-              unselectedLabelColor: Colors.grey,  // 선택되지 않은 탭 색상
+              labelStyle: const TextStyle(fontSize: 12),
+              unselectedLabelStyle: const TextStyle(fontSize: 12),
+              tabs: stats.keys.map((group) => Tab(
+                height: 32,
+                text: group,
+              )).toList(),
+              labelColor: Colors.blue,
+              unselectedLabelColor: Colors.grey,
             ),
           ),
+
+          // 통계 데이터 테이블
           Expanded(
             child: TabBarView(
               children: stats.keys.map((group) {
-                // 각 탭의 데이터를 미리 정렬
-                final sortedEntries = stats[group]!.entries.toList()
-                  ..sort((a, b) => b.value.avg.compareTo(a.value.avg));  // 평균 시간 기준 내림차순 정렬
+                final allEntries = stats[group]!.entries.toList()
+                  ..sort((a, b) => b.value.avg.compareTo(a.value.avg));
+                
+                final filteredEntries = _searchController.text.isEmpty
+                    ? allEntries
+                    : allEntries.where((entry) {
+                        final fullName = '$group ${entry.key}';
+                        return _isRegexSearch
+                            ? RegExp(_searchController.text).hasMatch(fullName)
+                            : fullName.toLowerCase().contains(_searchController.text.toLowerCase());
+                      }).toList();
                 
                 return SingleChildScrollView(
                   child: DataTable(
+                    headingTextStyle: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    dataTextStyle: const TextStyle(fontSize: 11),
+                    columnSpacing: 16,
+                    horizontalMargin: 8,
                     columns: const [
                       DataColumn(label: Text('Operation')),
-                      DataColumn(
-                        label: Text('Min (μs)'),
-                        numeric: true,
-                      ),
-                      DataColumn(
-                        label: Text('Max (μs)'),
-                        numeric: true,
-                      ),
-                      DataColumn(
-                        label: Text('Avg (μs)'),
-                        numeric: true,
-                      ),
-                      DataColumn(
-                        label: Text('Std (μs)'),
-                        numeric: true,
-                      ),
-                      DataColumn(
-                        label: Text('Count'),
-                        numeric: true,
-                      ),
+                      DataColumn(label: Text('Min'), numeric: true),
+                      DataColumn(label: Text('Max'), numeric: true),
+                      DataColumn(label: Text('Avg'), numeric: true),
+                      DataColumn(label: Text('Count'), numeric: true),
                     ],
-                    rows: sortedEntries.map((entry) {
+                    rows: filteredEntries.map((entry) {
                       final secondWord = entry.key;
                       final eventStats = entry.value;
                       return DataRow(
                         cells: [
                           DataCell(Text(secondWord)),
-                          DataCell(Text(eventStats.min.toStringAsFixed(1))),
-                          DataCell(Text(eventStats.max.toStringAsFixed(1))),
-                          DataCell(Text(eventStats.avg.toStringAsFixed(1))),
-                          DataCell(Text(eventStats.std.toStringAsFixed(1))),
+                          DataCell(Text('${eventStats.min.toStringAsFixed(1)}μs')),
+                          DataCell(Text('${eventStats.max.toStringAsFixed(1)}μs')),
+                          DataCell(Text('${eventStats.avg.toStringAsFixed(1)}μs')),
                           DataCell(Text(eventStats.durations.length.toString())),
                         ],
                       );
@@ -759,6 +984,7 @@ class _TimelineChartState extends State<TimelineChart> {
     _focusNode.removeListener(_handleFocusChange);
     _focusNode.dispose();
     _scrollController.dispose();  // 추가
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -770,6 +996,40 @@ class _TimelineChartState extends State<TimelineChart> {
       _statsCache = null;  // 캐시 무효화
       _statsCacheHash = null;
     }
+  }
+
+  Widget _buildSearchStats(List<Map<String, dynamic>> searchResults) {
+    final stats = _calculateSearchStats(searchResults);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildStatItem('최소', stats.min),
+          _buildStatItem('최대', stats.max),
+          _buildStatItem('평균', stats.avg),
+          _buildStatItem('표준편차', stats.std),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, double value) {
+    return Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          '${value.toStringAsFixed(2)}μs',
+          style: const TextStyle(fontSize: 11),
+        ),
+      ],
+    );
   }
 
   // ... (나머지 메서드들은 동일)
@@ -838,7 +1098,7 @@ class TimelinePainter extends CustomPainter {
       Paint()..color = Colors.white,
     );
 
-    // 트랙과 이벤트 그리기
+    // 트과 이벤트 그리기
     for (var tid in threadIds) {
       final trackCount = threadTrackCount[tid] ?? 1;
       
@@ -928,7 +1188,7 @@ class TimelinePainter extends CustomPainter {
           
           final paragraphBuilder = ui.ParagraphBuilder(ui.ParagraphStyle(
             textAlign: TextAlign.left,
-            fontSize: 11,  // 8에서 11로 증가
+            fontSize: 11,  // 8에 11로 증가
             ellipsis: '...',
             height: 1.1,
           ))
@@ -1059,7 +1319,7 @@ class TimelinePainter extends CustomPainter {
           ..strokeWidth = 0.5,
       );
 
-      // 시간 텍스트 표시
+      // 시 텍스트 표시
       final timeText = _formatTime(mouseTime);
       final textStyle = ui.TextStyle(
         color: Colors.black87,

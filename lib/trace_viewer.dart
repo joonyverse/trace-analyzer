@@ -329,9 +329,13 @@ class _TraceViewerState extends State<TraceViewer> {
             _buildErrorMessage(),
           if (_isLoading)
             const LinearProgressIndicator(),
+          Positioned(
+            top: 16,
+            right: 16,
+            child: _buildFloatingActionButton(),
+          ),
         ],
       ),
-      floatingActionButton: _buildFloatingActionButton(),
     );
   }
 
@@ -396,18 +400,18 @@ class _TraceViewerState extends State<TraceViewer> {
   }
 
   Widget _buildFloatingActionButton() {
-    return FloatingActionButton(
+    return FloatingActionButton.small(
       onPressed: _isLoading ? null : _handleFileUpload,
       child: _isLoading
           ? const SizedBox(
-              width: 24,
-              height: 24,
+              width: 20,
+              height: 20,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
                 color: Colors.white,
               ),
             )
-          : const Icon(Icons.upload_file),
+          : const Icon(Icons.upload_file, size: 20),
     );
   }
 
