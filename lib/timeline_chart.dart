@@ -58,6 +58,78 @@ class _TimelineChartState extends State<TimelineChart> {
   final ScrollController _scrollController = ScrollController();  // 추가
   double _verticalScrollOffset = 0.0;  // 추가
 
+  // 스냅 관련 설정
+  static const double _snapThreshold = 10.0;  // 픽셀 단위의 스냅 범위
+
+  // 시간을 x좌표로 변환하는 헬퍼 메서드
+  double _timeToX(double time, double availableWidth) {
+    return ((time - _viewportStart) / _viewportDuration) * availableWidth + TraceViewerConfig.threadLabelWidth;
+  }
+
+  // x좌표를 시간으로 변환하는 헬퍼 메서드
+  double _xToTime(double x, double availableWidth) {
+    return _viewportStart + ((x - TraceViewerConfig.threadLabelWidth) / availableWidth) * _viewportDuration;
+  }
+
+  // 마우스 Y 좌표에서 해당하는 스레드 ID를 찾는 메서드 추가
+  int? _findThreadIdAtY(double y) {
+    double currentY = 0.0;
+    
+    for (var tid in _sortedThreadIds) {
+      final trackCount = _threadTrackCount[tid] ?? 1;
+      final threadHeight = trackCount * TraceViewerConfig.trackHeight;
+      
+      if (y >= currentY && y < currentY + threadHeight) {
+        return tid;
+      }
+      
+      currentY += threadHeight;
+    }
+    
+    return null;
+  }
+
+  // 가장 가까운 이벤트 시점을 찾는 메서드 수정
+  double? _findNearestEventTime(Offset position, double availableWidth) {
+    final mouseTime = _xToTime(position.dx, availableWidth);
+    double? nearestTime;
+    double minDistance = _snapThreshold * _viewportDuration / availableWidth;
+
+    // 마우스 Y 좌표에 해당하는 스레드 찾기
+    final threadId = _findThreadIdAtY(position.dy - TraceViewerConfig.rulerHeight + _verticalScrollOffset);
+    if (threadId == null) return null;
+
+    // 해당 스레드의 이벤트만 검사
+    final threadEvents = _threadEvents[threadId] ?? [];
+    for (var event in threadEvents) {
+      final startTime = event['normalizedStartTime'] as double;
+      final duration = event['normalizedDuration'] as double;
+      final endTime = startTime + duration;
+
+      // 뷰포트 내의 이벤트만 고려
+      if (startTime > _viewportStart + _viewportDuration || 
+          endTime < _viewportStart) {
+        continue;
+      }
+
+      // 시작 시점과의 거리 확인
+      final startDistance = (mouseTime - startTime).abs();
+      if (startDistance < minDistance) {
+        minDistance = startDistance;
+        nearestTime = startTime;
+      }
+
+      // 종료 시점과의 거리 확인
+      final endDistance = (mouseTime - endTime).abs();
+      if (endDistance < minDistance) {
+        minDistance = endDistance;
+        nearestTime = endTime;
+      }
+    }
+
+    return nearestTime;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -303,10 +375,19 @@ class _TimelineChartState extends State<TimelineChart> {
             onTapDown: (_) => _focusNode.requestFocus(),
             onPanStart: (details) {
               _focusNode.requestFocus();
+              final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
+              final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
+              
               setState(() {
                 _dragStartPosition = details.localPosition;
-                _dragStart = details.localPosition;
-                _dragEnd = details.localPosition;
+                if (nearestTime != null) {
+                  // 스냅된 위치 계산
+                  final snappedX = _timeToX(nearestTime, availableWidth);
+                  _dragStart = Offset(snappedX, details.localPosition.dy);
+                } else {
+                  _dragStart = details.localPosition;
+                }
+                _dragEnd = _dragStart;
                 _isDragging = true;
               });
             },
@@ -314,8 +395,17 @@ class _TimelineChartState extends State<TimelineChart> {
               if (_dragStartPosition != null) {
                 final dragDistance = (details.localPosition - _dragStartPosition!).distance;
                 if (dragDistance > _dragThreshold) {
+                  final availableWidth = context.size!.width - TraceViewerConfig.threadLabelWidth;
+                  final nearestTime = _findNearestEventTime(details.localPosition, availableWidth);
+                  
                   setState(() {
-                    _dragEnd = details.localPosition;
+                    if (nearestTime != null) {
+                      // 스냅된 위치 계산
+                      final snappedX = _timeToX(nearestTime, availableWidth);
+                      _dragEnd = Offset(snappedX, details.localPosition.dy);
+                    } else {
+                      _dragEnd = details.localPosition;
+                    }
                   });
                 }
               }
