@@ -409,23 +409,17 @@ class _TimelineChartState extends State<TimelineChart> {
         final oldZoom = _zoomLevel;
         final threadLabelWidth = TraceViewerConfig.threadLabelWidth;
 
-        switch (event.logicalKey) {
-          case LogicalKeyboardKey.keyW:
-          case LogicalKeyboardKey.keyS:
+        // 키 이벤트의 물리적 키(실제 키보드의 물리적 위치)를 사용
+        switch (event.physicalKey) {
+          case PhysicalKeyboardKey.keyW:  // W/ㅈ 위치의 키
             if (_lastMousePosition != null) {
               final mouseX = _lastMousePosition!.dx - threadLabelWidth;
               final availableWidth = context.size!.width - threadLabelWidth;
               final mouseTimeOffset = (mouseX / availableWidth) * _viewportDuration;
               final mouseAbsoluteTime = _viewportStart + mouseTimeOffset;
 
-              if (event.logicalKey == LogicalKeyboardKey.keyW) {
-                _zoomLevel = (_zoomLevel * _zoomFactor)
-                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
-              } else {
-                _zoomLevel = (_zoomLevel / _zoomFactor)
-                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
-              }
-
+              _zoomLevel = (_zoomLevel * _zoomFactor)
+                  .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               _viewportDuration = widget.totalDuration / _zoomLevel;
               
               final newMouseTimeOffset = mouseTimeOffset * (oldZoom / _zoomLevel);
@@ -434,25 +428,45 @@ class _TimelineChartState extends State<TimelineChart> {
             } else {
               final centerTime = _viewportStart + (_viewportDuration / 2);
               
-              if (event.logicalKey == LogicalKeyboardKey.keyW) {
-                _zoomLevel = (_zoomLevel * _zoomFactor)
-                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
-              } else {
-                _zoomLevel = (_zoomLevel / _zoomFactor)
-                    .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
-              }
-
+              _zoomLevel = (_zoomLevel * _zoomFactor)
+                  .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
               _viewportDuration = widget.totalDuration / _zoomLevel;
               _scrollOffset = (centerTime - _viewportDuration / 2)
                   .clamp(0.0, widget.totalDuration - _viewportDuration);
             }
             break;
 
-          case LogicalKeyboardKey.keyA:
+          case PhysicalKeyboardKey.keyS:  // S/ㄴ 위치의 키
+            if (_lastMousePosition != null) {
+              final mouseX = _lastMousePosition!.dx - threadLabelWidth;
+              final availableWidth = context.size!.width - threadLabelWidth;
+              final mouseTimeOffset = (mouseX / availableWidth) * _viewportDuration;
+              final mouseAbsoluteTime = _viewportStart + mouseTimeOffset;
+
+              _zoomLevel = (_zoomLevel / _zoomFactor)
+                  .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
+              _viewportDuration = widget.totalDuration / _zoomLevel;
+              
+              final newMouseTimeOffset = mouseTimeOffset * (oldZoom / _zoomLevel);
+              _scrollOffset = (mouseAbsoluteTime - newMouseTimeOffset)
+                  .clamp(0.0, widget.totalDuration - _viewportDuration);
+            } else {
+              final centerTime = _viewportStart + (_viewportDuration / 2);
+              
+              _zoomLevel = (_zoomLevel / _zoomFactor)
+                  .clamp(TraceViewerConfig.minZoomLevel, TraceViewerConfig.maxZoomLevel);
+              _viewportDuration = widget.totalDuration / _zoomLevel;
+              _scrollOffset = (centerTime - _viewportDuration / 2)
+                  .clamp(0.0, widget.totalDuration - _viewportDuration);
+            }
+            break;
+
+          case PhysicalKeyboardKey.keyA:  // A/ㅁ 위치의 키
             _scrollOffset = (_scrollOffset - _scrollAmount / _zoomLevel)
                 .clamp(0.0, widget.totalDuration - _viewportDuration);
             break;
-          case LogicalKeyboardKey.keyD:
+
+          case PhysicalKeyboardKey.keyD:  // D/ㅇ 위치의 키
             _scrollOffset = (_scrollOffset + _scrollAmount / _zoomLevel)
                 .clamp(0.0, widget.totalDuration - _viewportDuration);
             break;
