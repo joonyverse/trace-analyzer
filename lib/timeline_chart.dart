@@ -158,8 +158,24 @@ class _TimelineChartState extends State<TimelineChart> {
   bool _showStats = false;
   static const double _statsViewHeight = 200.0;
 
-  // 통계 데이터 계산
+  // 통계 캐싱을 위한 변수 추가
+  Map<String, Map<String, EventStats>>? _statsCache;
+  int? _statsCacheHash;
+
+  // 통계 데이터 계산 (캐싱 적용)
   Map<String, Map<String, EventStats>> _calculateStats() {
+    // 이벤트 데이터의 해시값 계산
+    final currentHash = Object.hashAll(widget.timelineEvents);
+    
+    // 캐시가 유효한 경우 캐시된 데이터 반환
+    if (_statsCache != null && _statsCacheHash == currentHash) {
+      return _statsCache!;
+    }
+
+    // 캐시가 없거나 무효한 경우 새로 계산
+    final stopwatch = Stopwatch()..start();
+    print('통계 계산 시작');
+    
     final stats = <String, Map<String, EventStats>>{};
     
     for (final event in widget.timelineEvents) {
@@ -176,6 +192,11 @@ class _TimelineChartState extends State<TimelineChart> {
       stats[firstWord]![secondWord]!.addDuration(duration);
     }
     
+    // 캐시 업데이트
+    _statsCache = stats;
+    _statsCacheHash = currentHash;
+    
+    print('통계 계산 완료: ${stopwatch.elapsedMilliseconds}ms');
     return stats;
   }
 
@@ -254,7 +275,7 @@ class _TimelineChartState extends State<TimelineChart> {
   List<List<Map<String, dynamic>>> _assignTracksOptimized(List<Map<String, dynamic>> events) {
     if (events.isEmpty) return [];
     
-    // 각 트랙의 마지막 이벤���의 종료 시간을 저장
+    // 각 트랙의 마지막 이벤의 종료 시간을 저장
     final trackEndTimes = <double>[];
     final tracks = <List<Map<String, dynamic>>>[];
     
@@ -587,30 +608,55 @@ class _TimelineChartState extends State<TimelineChart> {
   }
 
   Widget _buildStatsView() {
+    // 통계 데이터를 한 번만 계산
     final stats = _calculateStats();
     
     return DefaultTabController(
       length: stats.length,
       child: Column(
         children: [
-          TabBar(
-            isScrollable: true,
-            tabs: stats.keys.map((group) => Tab(text: group)).toList(),
+          Material(  // TabBar를 Material 위젯으로 감싸기
+            color: Colors.white,
+            child: TabBar(
+              isScrollable: true,
+              tabs: stats.keys.map((group) => Tab(text: group)).toList(),
+              labelColor: Colors.blue,  // 선택된 탭 색상
+              unselectedLabelColor: Colors.grey,  // 선택되지 않은 탭 색상
+            ),
           ),
           Expanded(
             child: TabBarView(
-              children: stats.keys.map((group) => 
-                SingleChildScrollView(
+              children: stats.keys.map((group) {
+                // 각 탭의 데이터를 미리 정렬
+                final sortedEntries = stats[group]!.entries.toList()
+                  ..sort((a, b) => b.value.avg.compareTo(a.value.avg));  // 평균 시간 기준 내림차순 정렬
+                
+                return SingleChildScrollView(
                   child: DataTable(
                     columns: const [
                       DataColumn(label: Text('Operation')),
-                      DataColumn(label: Text('Min (μs)')),
-                      DataColumn(label: Text('Max (μs)')),
-                      DataColumn(label: Text('Avg (μs)')),
-                      DataColumn(label: Text('Std (μs)')),
-                      DataColumn(label: Text('Count')),
+                      DataColumn(
+                        label: Text('Min (μs)'),
+                        numeric: true,
+                      ),
+                      DataColumn(
+                        label: Text('Max (μs)'),
+                        numeric: true,
+                      ),
+                      DataColumn(
+                        label: Text('Avg (μs)'),
+                        numeric: true,
+                      ),
+                      DataColumn(
+                        label: Text('Std (μs)'),
+                        numeric: true,
+                      ),
+                      DataColumn(
+                        label: Text('Count'),
+                        numeric: true,
+                      ),
                     ],
-                    rows: stats[group]!.entries.map((entry) {
+                    rows: sortedEntries.map((entry) {
                       final secondWord = entry.key;
                       final eventStats = entry.value;
                       return DataRow(
@@ -625,8 +671,8 @@ class _TimelineChartState extends State<TimelineChart> {
                       );
                     }).toList(),
                   ),
-                ),
-              ).toList(),
+                );
+              }).toList(),
             ),
           ),
         ],
@@ -714,6 +760,16 @@ class _TimelineChartState extends State<TimelineChart> {
     _focusNode.dispose();
     _scrollController.dispose();  // 추가
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(TimelineChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 위젯이 업데이트될 때 이벤트 데이터가 변경되었는지 확인
+    if (widget.timelineEvents != oldWidget.timelineEvents) {
+      _statsCache = null;  // 캐시 무효화
+      _statsCacheHash = null;
+    }
   }
 
   // ... (나머지 메서드들은 동일)
