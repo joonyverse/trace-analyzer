@@ -1,6 +1,6 @@
 class TraceViewerConfig {
   // 파일 파싱 관련 설정
-  static const int chunkSize = 50000;  // 청크당 처리할 라인 수
+  static const int chunkSize = 500000;  // 청크당 처리할 라인 수
   
   // 타임라인 차트 관련 설정
   static const double initialZoomLevel = 1000.0;  // 초기 줌 레벨
