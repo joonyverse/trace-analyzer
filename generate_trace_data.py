@@ -6,8 +6,8 @@ from datetime import datetime
 def generate_random_trace_data(event_count=500000):
     # 두 단어로 된 이벤트 이름 정의
     first_words = [
-        "Network", "Database", "Memory", "CPU", "Disk",
-        "Audio", "Video", "Graphics", "Input", "System"
+        "PUC", "PUS", "DC", "DU", "CON",
+        "ORA", "SYS", "SR", "PRA", "RI"
     ]
     second_words = [
         "Process", "Request", "Operation", "Task", "Handler",
@@ -50,7 +50,7 @@ def generate_random_trace_data(event_count=500000):
             "tid": str(tid),
             "dur": str(duration),
             "ts": "0",
-            "cname": str(color_map[first_word])
+            "cname": "CNAME"
         }
         
         thread_events[tid].append(event)

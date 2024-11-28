@@ -254,11 +254,15 @@ class _TimelineChartState extends State<TimelineChart> {
 
   bool _isLoading = false;
 
+  // 색상 매핑을 위한 캐시 추가
+  final Map<String, Color> _eventColorCache = {};
+  
   @override
   void initState() {
     super.initState();
     _viewportDuration = widget.totalDuration;
     _initializeEventCache();
+    _initializeEventColors();  // 색상 초기화 추가
     
     // 포커스 노드 리스너 추가
     _focusNode.addListener(_handleFocusChange);
@@ -519,7 +523,7 @@ class _TimelineChartState extends State<TimelineChart> {
                         setState(() {
                           _dragStartPosition = details.localPosition;
                           if (nearestTime != null) {
-                            // 스냅된 위치 계산
+                            // 스된 위치 계산
                             final snappedX = _timeToX(nearestTime, availableWidth);
                             _dragStart = Offset(snappedX, details.localPosition.dy);
                           } else {
@@ -538,7 +542,7 @@ class _TimelineChartState extends State<TimelineChart> {
                             
                             setState(() {
                               if (nearestTime != null) {
-                                // 스냅된 위치 계산
+                                // 스냅된 위치 계
                                 final snappedX = _timeToX(nearestTime, availableWidth);
                                 _dragEnd = Offset(snappedX, details.localPosition.dy);
                               } else {
@@ -628,6 +632,7 @@ class _TimelineChartState extends State<TimelineChart> {
                                         guidelinePosition: _guidelinePosition,
                                         isDragging: _isDragging,
                                         scrollOffset: _verticalScrollOffset,  // _scrollOffset 대신 _verticalScrollOffset 사용
+                                        eventColorCache: _eventColorCache,  // 색상 캐시 전달
                                       ),
                                     ),
                                   ),
@@ -1032,6 +1037,38 @@ class _TimelineChartState extends State<TimelineChart> {
     );
   }
 
+  void _initializeEventColors() {
+    // 고유한 이벤트 이름(첫 단어) 수집
+    final uniqueEventTypes = widget.timelineEvents
+        .map((e) => (e['name'] as String).split(' ').first)
+        .toSet()
+        .toList();
+    
+    // 고유한 이벤트 타입 수에 따라 색상 간격 계산
+    final numberOfColors = uniqueEventTypes.length;
+    
+    // 기본 색상 속성
+    const baseHue = 0.0;        // 시작 색상 (빨강)
+    const saturation = 0.85;    // 채도
+    const value = 0.95;         // 명도
+    const alpha = 0.9;          // 투명도
+    
+    // 황금각을 사용하여 최대한 멀리 떨어진 색상들 생성
+    const goldenAngle = 137.508;  // 황금각(도)
+    
+    // 각 이벤트 타입별로 색상 할당
+    for (var i = 0; i < numberOfColors; i++) {
+      final hue = (baseHue + (goldenAngle * i)) % 360.0;
+      final color = HSVColor.fromAHSV(alpha, hue, saturation, value).toColor();
+      _eventColorCache[uniqueEventTypes[i]] = color;
+    }
+  }
+
+  Color _getEventColor(String eventName) {
+    final firstWord = eventName.split(' ').first;
+    return _eventColorCache[firstWord]!;
+  }
+
   // ... (나머지 메서드들은 동일)
 }
 
@@ -1051,6 +1088,9 @@ class TimelinePainter extends CustomPainter {
   final bool isDragging;
   final double scrollOffset;
 
+  // 색상 캐시 맵 추가
+  final Map<String, Color> _eventColorCache;
+
   TimelinePainter({
     required this.events,
     required this.threadIds,
@@ -1066,7 +1106,8 @@ class TimelinePainter extends CustomPainter {
     this.guidelinePosition,
     required this.isDragging,
     required this.scrollOffset,
-  });
+    required Map<String, Color> eventColorCache,  // 생성자 매개변수 추가
+  }) : _eventColorCache = eventColorCache;  // 초기화
 
   String _formatTime(double timeMs) {
     if (timeMs >= 1000000) {
@@ -1171,7 +1212,7 @@ class TimelinePainter extends CustomPainter {
           eventHeight,
         );
 
-        paint.color = _getEventColor(event['category'] as String);
+        paint.color = _getEventColor(event['name'] as String);
         canvas.drawRRect(
           RRect.fromRectAndRadius(rect, const Radius.circular(1)),  // 반경도 감소
           paint,
@@ -1385,17 +1426,9 @@ class TimelinePainter extends CustomPainter {
     );
   }
 
-  Color _getEventColor(String category) {
-    final colors = {
-      'rendering': Colors.blue.shade300,
-      'painting': Colors.green.shade300,
-      'computing': Colors.orange.shade300,
-      'network': Colors.purple.shade300,
-      'io': Colors.red.shade300,
-      'gc': Colors.brown.shade300,
-      'default': Colors.grey.shade300,
-    };
-    return (colors[category] ?? colors['default']!).withOpacity(0.9);
+  Color _getEventColor(String eventName) {
+    final firstWord = eventName.split(' ').first;
+    return _eventColorCache[firstWord]!;
   }
 
   @override
@@ -1437,7 +1470,7 @@ class TimeRulerPainter extends CustomPainter {
     // 보조 간격 (각 주요 간격을 5개로 분할)
     final minorIntervalWidth = majorIntervalWidth / 5;
 
-    // 텍스트 스타일 설정
+    // 텍스트 스일 설정
     final textStyle = ui.TextStyle(
       color: Colors.black87,
       fontSize: TraceViewerConfig.timelineFontSize,
