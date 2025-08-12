@@ -5,10 +5,13 @@ import { FilterPanel } from './components/FilterPanel';
 import { Timeline } from './components/Timeline';
 import { StatisticsPanel } from './components/StatisticsPanel';
 import { EventInspector } from './components/EventInspector';
+import { EventList } from './components/EventList';
+import { FlameGraph } from './components/FlameGraph';
 import { useTraceData } from './hooks/useTraceData';
 
 function App() {
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(true);
+  const [activeView, setActiveView] = useState<'timeline' | 'flamegraph'>('timeline');
   const {
     traceData,
     filteredEvents,
@@ -57,7 +60,11 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col">
-      <Header onExport={handleExport} />
+      <Header 
+        onExport={handleExport}
+        activeView={activeView}
+        onViewChange={setActiveView}
+      />
       
       <div className="flex-1 flex">
         <FilterPanel
@@ -68,10 +75,28 @@ function App() {
           onToggle={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
         />
         
-        <Timeline
+        <div className="flex-1 flex flex-col">
+          {activeView === 'timeline' ? (
+            <Timeline
+              events={visibleEvents}
+              viewportRange={viewportRange}
+              onViewportChange={setViewportRange}
+              onEventSelect={setSelectedEvent}
+              selectedEvent={selectedEvent}
+            />
+          ) : (
+            <div className="flex-1 p-4">
+              <FlameGraph
+                events={filteredEvents}
+                selectedEvent={selectedEvent}
+                onEventSelect={setSelectedEvent}
+              />
+            </div>
+          )}
+        </div>
+        
+        <EventList
           events={visibleEvents}
-          viewportRange={viewportRange}
-          onViewportChange={setViewportRange}
           onEventSelect={setSelectedEvent}
           selectedEvent={selectedEvent}
         />

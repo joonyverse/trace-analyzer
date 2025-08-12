@@ -1,12 +1,19 @@
 import React from 'react';
-import { Activity, Download, Settings, Search } from 'lucide-react';
+import { Activity, Download, Settings, Search, BarChart3, Flame } from 'lucide-react';
 
 interface HeaderProps {
   onExport?: () => void;
   onSettings?: () => void;
+  activeView?: 'timeline' | 'flamegraph';
+  onViewChange?: (view: 'timeline' | 'flamegraph') => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onExport, onSettings }) => {
+export const Header: React.FC<HeaderProps> = ({ 
+  onExport, 
+  onSettings, 
+  activeView = 'timeline',
+  onViewChange 
+}) => {
   return (
     <header className="bg-gray-800 border-b border-gray-700 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -19,6 +26,34 @@ export const Header: React.FC<HeaderProps> = ({ onExport, onSettings }) => {
         </div>
         
         <div className="flex items-center space-x-4">
+          {/* View Toggle */}
+          {onViewChange && (
+            <div className="flex bg-gray-700 rounded-lg p-1">
+              <button
+                onClick={() => onViewChange('timeline')}
+                className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors ${
+                  activeView === 'timeline' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'text-gray-300 hover:text-white'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4" />
+                <span>Timeline</span>
+              </button>
+              <button
+                onClick={() => onViewChange('flamegraph')}
+                className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors ${
+                  activeView === 'flamegraph' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'text-gray-300 hover:text-white'
+                }`}
+              >
+                <Flame className="w-4 h-4" />
+                <span>Flame Graph</span>
+              </button>
+            </div>
+          )}
+          
           <div className="relative">
             <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
             <input
